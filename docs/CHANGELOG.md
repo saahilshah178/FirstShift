@@ -1,5 +1,53 @@
 # FirstShift — Changelog
 
+## channel + questions (branch `channel/questions`, forked off post-merge main)
+
+- **Replaced the Phase-1 Chat/Ask/Questions placeholders** with real surfaces.
+- **Caregiver web chat** at `/c/{access_code}`: polling thread, FSM-driven
+  menu → skill → steps-with-frames → quiz → video → grading-result flow,
+  all localised to `caregivers.language` (en/es/tl). Replies to free text
+  that isn't a menu/quiz number are routed through `answer_question`.
+- **`send_message` stub swap** (`services/channel_service.py`): now logs every
+  outbound to the `messages` collection; sync signature preserved
+  (`send_message(caregiver_id, text, media_url=None) -> dict`). Also exposes
+  an `async` variant for the channel's own hot path.
+- **`answer_question` stub swap** (`services/questions_service.py`): async
+  pipeline prepends existing cards + policies into the Gemini prompt and
+  requests `{covered, answer, source_title}`. Not-covered answers land in the
+  inbox with `status="waiting_owner"`; a care-manager answer creates a `card`
+  so future paraphrases of the same question resolve instantly (verified).
+- **Agency Questions inbox** at `/questions`: waiting-first list, detail
+  pane with editable textarea + browser `MediaRecorder` voice capture.
+  Voice clip POSTs to `/api/questions/transcribe` (Gemini audio input
+  via existing `call_gemini`); transcript lands in the textarea editable
+  by the manager before saving.
+- **Signoff hook** (one shared-line change in
+  `backend/features/grading/routes_signoff.py`): after a successful
+  `$addToSet` on `cleared_skills`, calls `send_message_async` with
+  "You're cleared for &lt;skill title&gt;." in the caregiver's language.
+  Only fires when `modified_count` from the update is non-zero (so
+  re-adds don't send duplicate chats).
+- **Policies seeded** (idempotent, at channel feature startup):
+  `"Client refuses care"`, `"Client falls"`, `"Running late to a shift"`.
+  **These are developer-written placeholders.** User will revise copy.
+- **New collections**: `conversations`, `messages`, `cards`, `policies`.
+  Additive fields on `caregivers.phone` (forward-compat with WhatsApp).
+  Shapes documented in `docs/merge/channel-questions.md`.
+- **WhatsApp deferred**: `channel` fields on `conversations`/`messages`
+  kept at `"web"` for now. No Twilio code paths exist on this branch.
+
+### Known non-blockers
+
+- Phase-2 seed-data thinness: `translations.es.checks` and
+  `translations.<lang>.quiz` are empty on the Glove-removal / Transfer
+  seeds. The chat FSM falls back to English text for check descriptions
+  when a translation is missing (new skills published through
+  `lessons/record` carry full translations and render in-language).
+- The Glove-removal seed has no step `frame_id`s; step bubbles rendered
+  through the chat don't show inline images for that skill. Any skill
+  recorded via `lessons/record` includes frames.
+
+
 ## Phase 2 — Data + Shell (2026-02-24)
 
 - **POLISH-A**: `POST /api/media` now returns `url` as a relative path

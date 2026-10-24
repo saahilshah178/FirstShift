@@ -19,15 +19,22 @@ export default function CaregiverLayout({ nav }) {
   const [state, setState] = useState({ status: "loading" });
 
   useEffect(() => {
-    let abort = false;
+    const ac = new AbortController();
     api
-      .get(`/caregivers/by-code/${encodeURIComponent(code)}`)
-      .then((r) => {
-        if (abort) return;
-        setState({ status: "ok", data: r.data });
+      .get(`/caregivers/by-code/${encodeURIComponent(code)}`, {
+        signal: ac.signal,
       })
+      .then((r) => setState({ status: "ok", data: r.data }))
       .catch((e) => {
-        if (abort) return;
+        // Axios aborts surface as CanceledError (name) / ERR_CANCELED (code);
+        // fetch would use AbortError. Treat all three the same.
+        if (
+          e?.name === "CanceledError" ||
+          e?.name === "AbortError" ||
+          e?.code === "ERR_CANCELED"
+        ) {
+          return;
+        }
         const s = e?.response?.status;
         if (s === 404) {
           setState({ status: "404" });
@@ -35,9 +42,7 @@ export default function CaregiverLayout({ nav }) {
           setState({ status: "error", error: e?.message || "failed" });
         }
       });
-    return () => {
-      abort = true;
-    };
+    return () => ac.abort();
   }, [code]);
 
   if (state.status === "loading") {
@@ -152,7 +157,7 @@ export default function CaregiverLayout({ nav }) {
             borderColor: "var(--fs-border)",
           }}
         >
-          <ul className="grid grid-cols-3 font-ui text-xs">
+          <ul className="grid grid-cols-4 font-ui text-xs">
             {items.map((n) => {
               const to = withCode(n.path, code);
               return (

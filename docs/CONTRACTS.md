@@ -35,7 +35,12 @@ Current features: `ops`, `lessons`, `grading`, `questions`, `channel`,
 | `GET /api/lessons/caregiver/{caregiver_id}`| `{caregiver,cleared:[],remaining:[]}`                            |
 | `GET /api/grading/attempts`                | `{attempts:[{id,caregiver,skill,overall,clip_id,check_results[]}]}` |
 | `GET /api/grading/competency`              | `{caregivers:[{id,name,cleared_count,cleared[]}],total_skills}` |
-| `GET /api/questions/list`                  | `{questions:[]}` — reserved for later phases.                    |
+| `GET /api/questions/list`                  | `{questions:[…]}` — row shape see **§1b — Questions endpoint shapes** below. |
+| `POST /api/questions/ask`                  | See **§1b**.                                                      |
+| `POST /api/questions/{question_id}/answer` | See **§1b**. Body field is `text` (not `answer`).                 |
+| `POST /api/questions/transcribe`           | See **§1b**.                                                      |
+| `GET /api/questions/inbox`                 | See **§1b**.                                                      |
+| `GET /api/questions/policies`              | See **§1b**.                                                      |
 | `GET /api/caregivers/list`                 | See **§1a — Caregivers endpoint shapes** below.                   |
 | `GET /api/caregivers/by-code/{code}`       | See **§1a — Caregivers endpoint shapes** below. Code is upper-cased server-side. |
 
@@ -102,6 +107,115 @@ Notes for forks:
   convenience; in `/by-code/:code` they're nested so a caregiver
   context can expose `{caregiver, agency}` without duplication.
 - `cleared_skills` is always an array (possibly empty), never `null`.
+
+### 1b. Questions endpoint shapes (pinned)
+
+Added on branch `channel/questions`. Forks must not have to read source
+to learn these.
+
+#### `GET /api/questions/list` → `200`
+
+Preserved from Phase-1 shape; row keys documented here for the first time:
+
+```jsonc
+{
+  "questions": [
+    {
+      "caregiver_id": "<string>",
+      "text":         "<string>",       // the question
+      "language":     "en" | "es" | "tl",
+      "status":       "waiting_owner" | "answered",
+      "answer":       "<string|null>",  // null while waiting
+      "card_id":      "<string|null>",  // set when answered against a card
+      "source":       "owner" | "card" | "ai",
+      "created_at":   "<string: ISO-8601>",
+      "answered_at":  "<string: ISO-8601|null>"   // null while waiting
+    }
+  ]
+}
+```
+
+#### `POST /api/questions/ask` → `200`
+
+Request body: `{"caregiver_id": "<id>", "text": "<question>"}`.
+Response shape:
+
+```jsonc
+{
+  "question_id":  "<string>",
+  "caregiver_id": "<string>",
+  "question":     "<string>",
+  "status":       "answered" | "waiting_owner",     // NEW on this branch
+  "answer":       "<string>",                       // "" when waiting_owner
+  "citations":    [{ "source_title": "<string>" }], // [] when waiting_owner
+  "confidence":   0.0..1.0,                         // 0.0 when waiting_owner
+  "answered_at":  "<string: ISO-8601|null>",        // null when waiting_owner
+  "model":        "gemini" | "stub"
+}
+```
+
+#### `POST /api/questions/{question_id}/answer` → `200` or `404` / `409` / `422`
+
+> **Body field is `text`, not `answer`.** It carries the text content of
+> the manager's answer. We kept the name consistent with the `text` field
+> on `question` rows (both describe the "written content" of the
+> underlying utterance). This differs from the original brief which said
+> `{"answer": "..."}`.
+
+Request body: `{"text": "<string>"}` (required, non-empty).
+Responses:
+
+```jsonc
+// 200
+{ "question_id": "<string>",
+  "card_id":      "<string>",   // the card that was created
+  "delivered_text": "<string>"  // the message as delivered to the caregiver
+                                // (translated when caregiver.language != 'en')
+}
+// 404 { "detail": "question not found" }
+// 409 { "detail": "question already answered" }
+// 422 { "detail": "answer text required" | "text required" }
+```
+
+#### `POST /api/questions/transcribe` → `200` or `413` / `415`
+
+Multipart form:
+- `file` — audio clip, one of `audio/webm`, `audio/mpeg`, `audio/wav`,
+  `audio/aac`, `audio/ogg`. ≤25 MB.
+
+```jsonc
+{ "media_id": "<string>",       // uuid4 hex of the stored audio in GridFS
+  "transcript": "<string>" }    // empty when the clip has no speech
+```
+
+#### `GET /api/questions/inbox` → `200`
+
+```jsonc
+{
+  "waiting":  [ /* InboxRow */ ],
+  "answered": [ /* InboxRow */ ],
+  "total":    <int>
+}
+// InboxRow:
+{
+  "id":           "<string>",
+  "caregiver":    { "id": "<string>", "name": "<string>", "language": "en|es|tl" },
+  "text":         "<string>",
+  "language":     "en|es|tl",
+  "status":       "waiting_owner" | "answered",
+  "answer":       "<string|null>",
+  "source":       "owner" | "card" | "ai",
+  "card_id":      "<string|null>",
+  "created_at":   "<string: ISO-8601>",
+  "answered_at":  "<string: ISO-8601|null>"
+}
+```
+
+#### `GET /api/questions/policies` → `200`
+
+```jsonc
+{ "policies": [ { "id": "<string>", "title": "<string>", "text": "<string>" } ] }
+```
 
 ## 2. Frontend auto-discovery (features)
 
@@ -336,11 +450,25 @@ OpenAPI at **`/api/openapi.json`**. Interactive docs: `/api/docs`,
 
 ## 10. TODOs for later phases
 
-- Signed media access tokens (via the `url` field — not the raw UUID
-  path).
+- Signed, short-lived media access tokens (via the `url` field — not
+  the raw UUID path).
 - Real auth. Role switch and `/c/{code}` are **not** real auth today —
   they're convenient entry points for Phase 2 UI.
-- Wire each service stub to `call_gemini`. Signatures are frozen.
+- Wire each service stub to `call_gemini` **on its own fork branch** —
+  stubs stay fake on `main` so forks remain independent.
 - `questions`, `cards`, `incidents`, `plans` collection shapes.
-- Pro-translator review of the `translations.es` / `translations.tl`
-  placeholder strings in `backend/seed/seed.py`.
+- Pro-translator review of `translations.es` / `translations.tl`
+  placeholder strings in `backend/seed/seed.py` *and* in
+  `backend/features/grading/seed.py` (Glove removal).
+- **Grading auth**: `POST /api/grading/clips` and
+  `POST /api/grading/attempts/{id}/signoff` are open today. Tie them
+  to caregiver access-code / agency staff identity once real auth lands.
+- **Clip retention**: the mp4 saved by `/api/grading/clips` has no
+  expiry. Decide on a retention window (likely tied to signoff: keep
+  until signoff + N days, then purge GridFS blob + attempt row's
+  `clip_id`).
+- **Frame cleanup**: `grade_clip_pipeline` uploads 2 fps JPEG frames
+  (one per run) and keeps their UUIDs on the attempt in `frame_ids`.
+  Nothing deletes them. Add a sweep job that deletes `frame_ids` blobs
+  after `graded_at + 30 days` (same policy as clips, independently
+  configurable).
