@@ -9,11 +9,16 @@ Phase-3 additions live in `.routes_signoff` and are mounted below.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter
+import logging
+
+from fastapi import APIRouter, File, Form, UploadFile
 
 from db import get_db
 
+from .ingest import ingest_clip
 from .seed import schedule_startup_seed
+
+logger = logging.getLogger("firstshift.grading")
 
 router = APIRouter()
 
@@ -26,6 +31,24 @@ schedule_startup_seed()
 @router.get("/")
 async def placeholder() -> dict:
     return {"feature": "grading", "status": "placeholder"}
+
+
+@router.post("/clips")
+async def upload_clip(
+    file: UploadFile = File(...),
+    skill_id: str = Form(...),
+    caregiver_id: str = Form(...),
+) -> dict:
+    """Validate + transcode a caregiver clip; create an attempt in `grading` state.
+
+    The async grading task is wired in Stage 4; for now the attempt is
+    created and returned so the frontend can start polling.
+    """
+    result = await ingest_clip(
+        file=file, skill_id=skill_id, caregiver_id=caregiver_id
+    )
+    # Stage 4 schedules grading via `background.enqueue_grade(attempt_id)`.
+    return result
 
 
 @router.get("/attempts")
