@@ -117,6 +117,12 @@ async def _on_startup() -> None:
     await _ensure_collections_and_indexes()
     mounted = _discover_and_mount_features()
     logger.info("features mounted: %s", mounted)
+    # Auto-seed when the agencies collection is empty.
+    try:
+        from seed.seed import seed_if_empty
+        await seed_if_empty()
+    except Exception as exc:  # noqa: BLE001 — never crash on seed failure
+        logger.exception("auto-seed failed: %s", exc)
 
 
 @app.on_event("shutdown")

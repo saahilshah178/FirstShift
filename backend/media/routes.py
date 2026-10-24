@@ -1,7 +1,7 @@
 """HTTP routes for media upload/download."""
 from __future__ import annotations
 
-from fastapi import APIRouter, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 
 from .store import get_media_store
@@ -26,7 +26,7 @@ router = APIRouter()
 
 @router.post("")
 @router.post("/")
-async def upload_media(request: Request, file: UploadFile = File(...)) -> dict:
+async def upload_media(file: UploadFile = File(...)) -> dict:
     content_type = (file.content_type or "").lower()
     if content_type not in ALLOWED_CONTENT_TYPES:
         raise HTTPException(
@@ -50,10 +50,9 @@ async def upload_media(request: Request, file: UploadFile = File(...)) -> dict:
 
     store = get_media_store()
     uid = await store.save(bytes(buf), content_type, filename=file.filename)
-    base = str(request.base_url).rstrip("/")
     return {
         "uuid": uid,
-        "url": f"{base}/api/media/{uid}",
+        "url": f"/api/media/{uid}",
         "content_type": content_type,
         "size": len(buf),
     }

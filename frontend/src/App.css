@@ -1,15 +1,35 @@
-/* Phone-first base styles for FirstShift. */
+/* FirstShift — phone-first base + design tokens (warm palette). */
 
 :root {
-    /* 44px minimum tap target (iOS HIG). */
-    --fs-tap: 44px;
+    /* --- Design tokens --- */
+    --fs-tap: 44px; /* min tap target */
+    --fs-radius: 14px;
+    --fs-max-w: 480px; /* mobile viewport cap on desktop */
 
-    /* Palette (neutral, high-contrast). Phase 2 will refine. */
-    --fs-bg: #ffffff;
-    --fs-fg: #111317;
-    --fs-muted: #5b6472;
-    --fs-border: #e5e7eb;
-    --fs-accent: #f4f6f8;
+    /* Agency palette (warm, slightly cooler cream). */
+    --fs-bg: #fdf8f1;
+    --fs-fg: #1c1611;
+    --fs-muted: #786b60;
+    --fs-border: #e9d9c6;
+    --fs-surface: #ffffff;
+    --fs-accent: #fcefd9;
+    --fs-primary: #b4511b; /* burnt umber */
+    --fs-primary-fg: #ffffff;
+    --fs-pass: #2f6b4a;
+    --fs-warn: #a86b1a;
+    --fs-fail: #9b2b2b;
+}
+
+[data-side="caregiver"] {
+    /* Caregiver palette (chat feel: deeper, warmer surface). */
+    --fs-bg: #2a1f17;
+    --fs-fg: #fdf5e7;
+    --fs-muted: #c9b89f;
+    --fs-border: #4a382a;
+    --fs-surface: #35281e;
+    --fs-accent: #4a382a;
+    --fs-primary: #e78a3c;
+    --fs-primary-fg: #1c1611;
 }
 
 html,
@@ -23,17 +43,102 @@ html {
 }
 
 body {
-    font-size: 16px; /* phone-first base */
+    margin: 0;
+    font-size: 16px;
     line-height: 1.5;
     background: var(--fs-bg);
     color: var(--fs-fg);
+    font-family:
+        "Fraunces", ui-serif, Georgia, "Iowan Old Style", "Palatino Linotype",
+        serif;
 }
 
-/* Any element marked as interactive should meet the tap-target floor. */
+/* Headings use the serif too — reinforces the "warm" register. */
+h1,
+h2,
+h3 {
+    font-family: inherit;
+    letter-spacing: -0.01em;
+}
+
+/* Body UI/forms stay in a clean sans so numbers & inputs read cleanly. */
+button,
+input,
+select,
+textarea,
+.font-ui {
+    font-family:
+        "Public Sans", ui-sans-serif, -apple-system, "Segoe UI", Roboto,
+        "Helvetica Neue", Arial, sans-serif;
+}
+
+.tap {
+    min-height: var(--fs-tap);
+    min-width: var(--fs-tap);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
 button,
 a[role="button"],
 input[type="button"],
 input[type="submit"] {
     min-height: var(--fs-tap);
-    min-width: var(--fs-tap);
+}
+
+/* Mobile frame on desktop — both shells live inside this. */
+.fs-frame {
+    max-width: var(--fs-max-w);
+    margin-inline: auto;
+    min-height: 100vh;
+    background: var(--fs-bg);
+    color: var(--fs-fg);
+    display: flex;
+    flex-direction: column;
+}
+
+.fs-card {
+    background: var(--fs-surface);
+    border: 1px solid var(--fs-border);
+    border-radius: var(--fs-radius);
+}
+
+.fs-divider > * + * {
+    border-top: 1px solid var(--fs-border);
+}
+
+.fs-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 12px;
+    border: 1px solid var(--fs-border);
+    background: var(--fs-accent);
+    color: var(--fs-fg);
+}
+
+.fs-chip-pass {
+    color: var(--fs-pass);
+    border-color: #cfe2d5;
+    background: #e8f3ec;
+}
+.fs-chip-warn {
+    color: var(--fs-warn);
+    border-color: #ebd9bd;
+    background: #fbf0dc;
+}
+.fs-chip-fail {
+    color: var(--fs-fail);
+    border-color: #e9c9c9;
+    background: #f6e4e4;
+}
+
+/* Focus ring high enough for accessibility. */
+:focus-visible {
+    outline: 2px solid var(--fs-primary);
+    outline-offset: 2px;
+    border-radius: 6px;
 }

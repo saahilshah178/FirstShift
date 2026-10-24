@@ -1,5 +1,9 @@
 import React from "react";
-import Placeholder from "./Placeholder";
+import ChatPage from "./ChatPage";
 
-export const routes = [{ path: "/channel", element: <Placeholder /> }];
-export const nav = [];
+// Caregiver-only feature. No agency-side routes.
+export const routes = [{ path: "/c/:code", element: <ChatPage /> }];
+
+export const nav = [
+  { label: "Chat", path: "/c/:code", order: 10, side: "caregiver" },
+];

@@ -146,7 +146,27 @@ async def call_gemini(
             config=config,
         )
 
-    response = await asyncio.to_thread(_call)
+    # Retry on 503 UNAVAILABLE: 1s then 3s backoff (max 2 retries).
+    from google.genai.errors import ServerError  # type: ignore
+
+    delays = [1.0, 3.0]
+    attempt = 0
+    while True:
+        try:
+            response = await asyncio.to_thread(_call)
+            break
+        except ServerError as exc:
+            code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+            if code == 503 and attempt < len(delays):
+                logger.warning(
+                    "Gemini 503 UNAVAILABLE (attempt %d); retrying in %.1fs",
+                    attempt + 1,
+                    delays[attempt],
+                )
+                await asyncio.sleep(delays[attempt])
+                attempt += 1
+                continue
+            raise
     text = response.text or ""
 
     if response_schema is not None:

@@ -34,6 +34,23 @@ Gemini via the `google-genai` SDK.
 
 ## What's shipped (grows over time)
 
+### 2026-02-24 — Phase 2: Data + Shell
+- POLISH-A: relative `url` in `POST /api/media`.
+- POLISH-B: `call_gemini` retries 503 (1 s + 3 s backoff).
+- Seed script (`python -m backend.seed.seed`, auto-run when agencies
+  empty): 2 agencies, 5 caregivers, 4 clients, 3 full skills with
+  reference frames in GridFS, 6 attempts, 3 signoffs.
+- Access-code generator with safe alphabet + unique retry.
+- Agency app shell (phone-first warm palette, role switch persisted
+  in `localStorage`, bottom nav built from auto-discovered manifest).
+- "Open caregiver view" picker modal → `/c/:code`.
+- Caregiver chat shell (dark warm palette, 3-tab nav, 404 state,
+  `useCaregiver()` context).
+- New `caregivers` feature with `/list` and `/by-code/:code`.
+- Agency pages: Today, Skills, New hires, Sign-off, Clients,
+  Competency files, Questions. Caregiver pages: Chat, Lessons, Ask.
+- Design tokens + Fraunces + Public Sans fonts.
+
 ### 2026-02-24 — Phase 1: Backbone
 - Backend feature auto-discovery (ops, lessons, grading, questions,
   channel placeholders).
