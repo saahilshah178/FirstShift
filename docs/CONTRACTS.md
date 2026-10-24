@@ -336,11 +336,25 @@ OpenAPI at **`/api/openapi.json`**. Interactive docs: `/api/docs`,
 
 ## 10. TODOs for later phases
 
-- Signed media access tokens (via the `url` field — not the raw UUID
-  path).
+- Signed, short-lived media access tokens (via the `url` field — not
+  the raw UUID path).
 - Real auth. Role switch and `/c/{code}` are **not** real auth today —
   they're convenient entry points for Phase 2 UI.
-- Wire each service stub to `call_gemini`. Signatures are frozen.
+- Wire each service stub to `call_gemini` **on its own fork branch** —
+  stubs stay fake on `main` so forks remain independent.
 - `questions`, `cards`, `incidents`, `plans` collection shapes.
-- Pro-translator review of the `translations.es` / `translations.tl`
-  placeholder strings in `backend/seed/seed.py`.
+- Pro-translator review of `translations.es` / `translations.tl`
+  placeholder strings in `backend/seed/seed.py` *and* in
+  `backend/features/grading/seed.py` (Glove removal).
+- **Grading auth**: `POST /api/grading/clips` and
+  `POST /api/grading/attempts/{id}/signoff` are open today. Tie them
+  to caregiver access-code / agency staff identity once real auth lands.
+- **Clip retention**: the mp4 saved by `/api/grading/clips` has no
+  expiry. Decide on a retention window (likely tied to signoff: keep
+  until signoff + N days, then purge GridFS blob + attempt row's
+  `clip_id`).
+- **Frame cleanup**: `grade_clip_pipeline` uploads 2 fps JPEG frames
+  (one per run) and keeps their UUIDs on the attempt in `frame_ids`.
+  Nothing deletes them. Add a sweep job that deletes `frame_ids` blobs
+  after `graded_at + 30 days` (same policy as clips, independently
+  configurable).
