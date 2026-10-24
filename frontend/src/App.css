@@ -1,0 +1,39 @@
+/* Phone-first base styles for FirstShift. */
+
+:root {
+    /* 44px minimum tap target (iOS HIG). */
+    --fs-tap: 44px;
+
+    /* Palette (neutral, high-contrast). Phase 2 will refine. */
+    --fs-bg: #ffffff;
+    --fs-fg: #111317;
+    --fs-muted: #5b6472;
+    --fs-border: #e5e7eb;
+    --fs-accent: #f4f6f8;
+}
+
+html,
+body,
+#root {
+    height: 100%;
+}
+
+html {
+    -webkit-text-size-adjust: 100%;
+}
+
+body {
+    font-size: 16px; /* phone-first base */
+    line-height: 1.5;
+    background: var(--fs-bg);
+    color: var(--fs-fg);
+}
+
+/* Any element marked as interactive should meet the tap-target floor. */
+button,
+a[role="button"],
+input[type="button"],
+input[type="submit"] {
+    min-height: var(--fs-tap);
+    min-width: var(--fs-tap);
+}
