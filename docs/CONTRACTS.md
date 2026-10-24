@@ -36,8 +36,72 @@ Current features: `ops`, `lessons`, `grading`, `questions`, `channel`,
 | `GET /api/grading/attempts`                | `{attempts:[{id,caregiver,skill,overall,clip_id,check_results[]}]}` |
 | `GET /api/grading/competency`              | `{caregivers:[{id,name,cleared_count,cleared[]}],total_skills}` |
 | `GET /api/questions/list`                  | `{questions:[]}` — reserved for later phases.                    |
-| `GET /api/caregivers/list`                 | `{caregivers:[{…, agency_name}]}` — for the "Open caregiver view" picker. |
-| `GET /api/caregivers/by-code/{code}`       | `{caregiver, agency}` or `404`. Code is upper-cased server-side. |
+| `GET /api/caregivers/list`                 | See **§1a — Caregivers endpoint shapes** below.                   |
+| `GET /api/caregivers/by-code/{code}`       | See **§1a — Caregivers endpoint shapes** below. Code is upper-cased server-side. |
+
+### 1a. Caregivers endpoint shapes (pinned)
+
+Forks must not have to read source to learn these.
+
+#### `GET /api/caregivers/list` → `200`
+
+```jsonc
+{
+  "caregivers": [
+    {
+      "id":              "<string: _id, uuid4 hex>",
+      "name":            "<string>",
+      "language":        "en" | "es" | "tl",
+      "access_code":     "<string: 6 chars, [A-HJ-KM-NP-Z2-9]>",
+      "agency_id":       "<string>",
+      "agency_name":     "<string: joined from agencies collection>",
+      "hired_at":        "<string: ISO-8601>",
+      "experience_note": "<string>",
+      "cleared_skills":  ["<skill_id>", ...]
+    }
+    // ... sorted by `name` ascending
+  ]
+}
+```
+
+The outer `{"caregivers": [...]}` wrapper is intentional so we can
+add pagination fields later without breaking callers.
+
+#### `GET /api/caregivers/by-code/{code}` → `200` or `404`
+
+- `code` is normalised server-side (`.strip().upper()`), so
+  `/by-code/zspusg` and `/by-code/ZSPUSG ` both resolve.
+- `404 {"detail": "caregiver not found"}` when no caregiver matches.
+- On success:
+
+```jsonc
+{
+  "caregiver": {
+    "id":              "<string>",
+    "name":            "<string>",
+    "language":        "en" | "es" | "tl",
+    "access_code":     "<string: 6 chars>",
+    "agency_id":       "<string>",
+    "hired_at":        "<string: ISO-8601>",
+    "experience_note": "<string>",
+    "cleared_skills":  ["<skill_id>", ...]
+  },
+  "agency": {
+    "id":   "<string>",
+    "name": "<string>"
+  }   // or null if the caregiver has no agency (should not happen in seed data)
+}
+```
+
+Notes for forks:
+
+- `caregiver.id` is the same string value stored as `_id` in Mongo
+  (uuid4 hex, not an `ObjectId`).
+- `caregiver` here **omits** `agency_name` because `agency.name` is
+  returned separately. In `/list` the fields are flattened for picker
+  convenience; in `/by-code/:code` they're nested so a caregiver
+  context can expose `{caregiver, agency}` without duplication.
+- `cleared_skills` is always an array (possibly empty), never `null`.
 
 ## 2. Frontend auto-discovery (features)
 
