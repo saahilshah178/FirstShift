@@ -1,63 +1,44 @@
-"""Grading service stub.
+"""Grading service — real Gemini-backed implementation.
 
-Returns a realistic grading payload. In Phase 2+ this will call Gemini
-on the uploaded clip (see `backend/ai/gemini.py`).
+The `grade_clip` function below replaces the Phase-1 stub. It is
+**pure**: it does not touch the `attempts` collection. The caller
+(the `grading` feature's background job) persists the attempt.
+
+Contract shape (matches `docs/CONTRACTS.md`) plus additive keys:
+`verdict`, `message_for_caregiver`, `runs_used`, `graded_once`,
+`raw_runs`, and per-check `note`.
 """
 from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from features.grading.pipeline import grade_clip_pipeline
 
-def grade_clip(skill_id: str, caregiver_id: str, clip_id: str) -> dict:
-    """Grade a submitted clip for a skill.
 
-    Returns:
-        {
-          "skill_id": str,
-          "caregiver_id": str,
-          "clip_id": str,
-          "checks": [
-            {"id": str, "description": str, "result": "pass"|"fail"|"unclear",
-             "time": float, "seen": bool, "safety_critical": bool}
-          ],
-          "overall": "pass"|"fail"|"needs_review",
-          "score": float (0..1),
-          "created_at": ISO-8601 str,
-          "model": str (which model did the grading; "stub" in Phase 1),
-        }
-    """
-    return {
-        "skill_id": skill_id,
-        "caregiver_id": caregiver_id,
-        "clip_id": clip_id,
-        "checks": [
-            {
-                "id": "c1",
-                "description": "Washed hands before contact",
-                "result": "pass",
-                "time": 3.2,
-                "seen": True,
-                "safety_critical": True,
-            },
-            {
-                "id": "c2",
-                "description": "Applied gloves correctly",
-                "result": "pass",
-                "time": 7.4,
-                "seen": True,
-                "safety_critical": True,
-            },
-            {
-                "id": "c3",
-                "description": "Verbally confirmed resident identity",
-                "result": "unclear",
-                "time": 12.1,
-                "seen": False,
-                "safety_critical": False,
-            },
-        ],
-        "overall": "needs_review",
-        "score": 0.67,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "model": "stub",
+async def grade_clip(
+    skill_id: str,
+    caregiver_id: str,
+    clip_id: str,
+) -> dict:
+    """Grade a clip. Async; the caller must await.
+
+    Returns the contract dict:
+    {
+      "skill_id", "caregiver_id", "clip_id",
+      "checks": [{"id","description","result":"pass"|"fail"|"unclear",
+                  "time": float, "seen": bool, "safety_critical": bool,
+                  "note": str}],
+      "overall": "pass"|"fail"|"needs_review",
+      "score": float (0..1),
+      "created_at": ISO-8601, "model": GEMINI_MODEL,
+      # additive:
+      "verdict": "pass"|"retry"|"retake",
+      "message_for_caregiver": str,
+      "runs_used": int,
+      "graded_once": bool,
+      "raw_runs": [ ... ],
     }
+    """
+    pipeline = await grade_clip_pipeline(skill_id, caregiver_id, clip_id)
+    pipeline["created_at"] = datetime.now(timezone.utc).isoformat()
+    return pipeline

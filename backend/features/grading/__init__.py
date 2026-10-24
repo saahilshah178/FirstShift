@@ -4,6 +4,8 @@ Routes mounted at `/api/grading`:
 - GET `/`           -> placeholder marker.
 - GET `/attempts`   -> recent attempts enriched with caregiver + skill name.
 - GET `/competency` -> caregivers grouped by cleared-skill count.
+
+Phase-3 additions live in `.routes_signoff` and are mounted below.
 """
 from __future__ import annotations
 
@@ -11,7 +13,14 @@ from fastapi import APIRouter
 
 from db import get_db
 
+from .seed import schedule_startup_seed
+
 router = APIRouter()
+
+# Fire-and-forget the Glove-removal skill seed so re-ensure survives
+# a `python -m backend.seed.seed` re-run. Safe at import time: this
+# module is imported inside the server's async startup handler.
+schedule_startup_seed()
 
 
 @router.get("/")
