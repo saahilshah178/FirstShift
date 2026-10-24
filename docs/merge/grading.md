@@ -11,8 +11,9 @@
   - `a53911f` feat(grading): clip upload + HEVC->H.264 transcode + attempt stub
   - `b788fa9` feat(grading): adaptive 3-run grade_clip pipeline + background job
   - `715f3a9` feat(grading): signoff + competency endpoints
-  - `(stage 6 commit)` feat(grading): caregiver /practice and agency /signoff UI
-  - `(this commit)` docs(grading): merge notes final
+  - `cdf59bd` feat(grading): caregiver /practice and agency /signoff UI
+  - `66e3bdd` docs(grading): merge notes final
+  - `(this commit)` fix(caregiver): restore StrictMode, add AbortController to CaregiverLayout fetch
 
 ## System dependencies
 
@@ -31,11 +32,14 @@
 
 ## Shared-line changes
 
-Only one. The feature brief said "expect zero" — flagging explicitly:
+**None net**, after the follow-up fix below. During the branch I did
+touch two shared files; the final commit undoes the risky one and
+confines the replacement to one caregiver-layout change.
 
-| File                           | Change                                                                                                                                                                                                  | Why                                                                                                                                                                                                                                                                                                                                                                     |
-| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `frontend/src/index.js`        | Removed the `<React.StrictMode>` wrapper around `<App />`.                                                                                                                                              | React 19 StrictMode's dev-only double-invoke of `useEffect` was leaving `CaregiverLayout` stuck in `status: "loading"` after the second mount's abort flag closed. Phase 2 lived with the race because the first fetch *usually* resolved before cleanup; adding another caregiver-side feature (`Practice`) made the race hit every time. Production builds don't double-invoke, so this change does not affect release behaviour. Revisiting via `AbortController` is tracked below. |
+| File                                   | Change                                                                                              | Status                                                                                                                                                                                                                                                                                                                                     |
+| -------------------------------------- | --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `frontend/src/index.js`                | Removed `<React.StrictMode>` in a mid-branch commit; **restored** in the final `fix(caregiver)` commit. | Net: **unchanged** on branch end. No other feature loses StrictMode's dev-time double-invoke signal.                                                                                                                                                                                                                                        |
+| `frontend/src/shell/CaregiverLayout.js` | Fetch rewritten to use `AbortController` (axios `signal`). Cancelled errors (`CanceledError` / `ERR_CANCELED` / `AbortError`) are swallowed in `.catch`; genuine 404 / 500 / network errors still surface. | **Final shape** on the branch. This is the proper fix for the StrictMode double-invoke race the mid-branch workaround was papering over. Verified: `/c/2TBAFX` and `/c/2TBAFX/practice` both render under StrictMode with no "setState on unmounted component" warnings; the first mount's fetch is cancelled with `net::ERR_ABORTED` (visible in the browser console) and the second fetch's response populates the layout. |
 
 ## Files added
 
@@ -187,6 +191,36 @@ Preflight (as the orchestration brief required):
   of three adaptive runs failed with `429 RESOURCE_EXHAUSTED` and the
   remaining two met the ≥2-valid-run bar. Operators moving to paid
   tier should see this scenario disappear.
-- `index.js` StrictMode removal — see §Shared-line changes. Track as
-  P1: swap useEffect fetches to `AbortController` + reinstate
-  StrictMode in a follow-up.
+
+## Known quirks
+
+### Validation order in `POST /api/grading/attempts/{id}/signoff`
+
+Checks fire in this order:
+
+1. attempt exists → 404 if not
+2. `reviewed is False` → 409 if already reviewed
+3. `status in {ready_to_sign, needs_practice}` → 409 if not signable
+4. no newer attempt exists for this caregiver+skill → 409 if there is one
+5. decision-specific note-required checks → 422 if a required note is missing
+
+Consequence (tester-flagged): sending `send_back` with an empty note
+against an **unsignable** attempt returns **409** ("not signable"),
+not 422 ("note required"). This is intentional. The attempt's
+signability is a structural precondition — the note rule is only
+meaningful when a signoff could actually land. 422 is reachable only
+on genuinely signable attempts. If a future consumer wants the 422
+to win, we'd need to swap steps 3 and 5, but that would reject
+unsignable requests on the wrong axis.
+
+### Test-fixture residue cleaned
+
+Stage-5 curl tests inserted two synthetic signed-off attempts for Alex
+Johnson (`2TBAFX`) on the Glove-removal skill, with signer strings
+`Rachel Kim, RN` and `Dani Osei`. Those are not Phase-2 seed signers;
+they only existed because of in-branch testing and the fact that
+`backend/seed/seed.py` does not own the `signoffs` collection for
+Phase-3 payloads. The final commit removes those two attempts, their
+two signoffs, and the stale `cleared_skills` entry so a tester
+spot-checking `GET /api/grading/competency/<alex>` sees the honest
+state. Nothing in production code paths changed.

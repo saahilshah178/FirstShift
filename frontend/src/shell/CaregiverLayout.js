@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useRef, useState } from "react";
+import React, { createContext, useContext, useEffect, useState } from "react";
 import { useParams, NavLink, Outlet, useNavigate } from "react-router-dom";
 import { api } from "@/api";
 import { caregiverNav, withCode } from "@/featureRegistry";
@@ -19,24 +19,30 @@ export default function CaregiverLayout({ nav }) {
   const [state, setState] = useState({ status: "loading" });
 
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const r = await api.get(
-          `/caregivers/by-code/${encodeURIComponent(code)}`,
-        );
-        if (cancelled) return;
-        setState({ status: "ok", data: r.data });
-      } catch (e) {
-        if (cancelled) return;
+    const ac = new AbortController();
+    api
+      .get(`/caregivers/by-code/${encodeURIComponent(code)}`, {
+        signal: ac.signal,
+      })
+      .then((r) => setState({ status: "ok", data: r.data }))
+      .catch((e) => {
+        // Axios aborts surface as CanceledError (name) / ERR_CANCELED (code);
+        // fetch would use AbortError. Treat all three the same.
+        if (
+          e?.name === "CanceledError" ||
+          e?.name === "AbortError" ||
+          e?.code === "ERR_CANCELED"
+        ) {
+          return;
+        }
         const s = e?.response?.status;
-        if (s === 404) setState({ status: "404" });
-        else setState({ status: "error", error: e?.message || "failed" });
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
+        if (s === 404) {
+          setState({ status: "404" });
+        } else {
+          setState({ status: "error", error: e?.message || "failed" });
+        }
+      });
+    return () => ac.abort();
   }, [code]);
 
   if (state.status === "loading") {
