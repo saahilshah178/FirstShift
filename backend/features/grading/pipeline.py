@@ -1,15 +1,24 @@
-"""Lane-B grade_clip pipeline (initial, single-run version).
+"""Lane-B grade_clip pipeline (adaptive 3-run).
 
-Stage 2: proves end-to-end Gemini wiring — extracts frames at 2 fps,
-one Gemini call with the Lane-B prompt and schema, maps the response
-back into the contract shape. The adaptive 3-run logic is added in
-Stage 4 of this branch.
+Flow:
+1. Run 1 at offset 0.
+2. ONLY if any safety-critical check is `missed` or `unsure` in run 1,
+   re-extract frames at +0.17s and +0.33s and run again (runs 2 and 3).
+3. Validity: every check id present; result ∈ {passed,missed,unsure};
+   time parses. Invalid → retry that run up to 2× with the SAME frames.
+   1-run path needs ≥1 valid run; 3-run path needs ≥2 valid runs, else
+   `GradingError`.
+4. Majority per check across valid runs; tie → `unsure`. Time is the
+   median of agreeing runs. Note is the "seen" sentence from the first
+   agreeing run.
+5. Server computes `verdict`; the model's `overall` is ignored.
 
 Transcode happens in `.ingest` before `grade_clip_pipeline` is called;
 this module only consumes a stored mp4 UUID.
 """
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import logging
@@ -198,10 +207,63 @@ def _build_prompt(
 
 
 # ---- main entry point ----
+MAX_VALIDATION_RETRIES = 2
+
+
+async def _one_run(
+    *, skill: dict, caregiver_language_name: str, clip_path: Path,
+    offset: float, out_dir: Path,
+) -> tuple[dict | None, list[str]]:
+    """Extract frames at `offset`, upload, call Gemini, retry up to 2× on invalid.
+
+    Returns (valid_run_dict, frame_uuids). `valid_run_dict` is None if
+    every attempt fails validation.
+    """
+    frames = _ffmpeg_extract_frames(clip_path, out_dir, offset=offset)
+    if not frames:
+        return None, []
+    labeled = await _upload_labeled_frames(frames)
+    frame_ids = [u for (u, _, _) in labeled]
+    media_uuids = frame_ids
+    labels = [lbl for (_, _, lbl) in labeled]
+    prompt = _build_prompt(skill, labels, caregiver_language_name)
+
+    for attempt in range(MAX_VALIDATION_RETRIES + 1):
+        try:
+            raw = await call_gemini(
+                prompt=prompt,
+                media_uuids=media_uuids,
+                response_schema=LANE_B_SCHEMA,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "run offset=%.2f attempt=%d call_gemini failed: %s",
+                offset, attempt + 1, exc,
+            )
+            if attempt < MAX_VALIDATION_RETRIES:
+                await asyncio.sleep(0.5 * (attempt + 1))
+                continue
+            return None, frame_ids
+        if _validate(raw, skill):
+            return raw, frame_ids
+        logger.warning(
+            "run offset=%.2f attempt=%d invalid shape; retrying", offset, attempt + 1,
+        )
+    return None, frame_ids
+
+
+def _has_safety_critical_concern(run: dict, skill: dict) -> bool:
+    sc_ids = {c["id"] for c in skill.get("checks", []) if c.get("safety_critical")}
+    for rc in run.get("checks", []):
+        if rc.get("id") in sc_ids and rc.get("result") in ("missed", "unsure"):
+            return True
+    return False
+
+
 async def grade_clip_pipeline(
     skill_id: str, caregiver_id: str, clip_id: str,
 ) -> dict:
-    """Single-run Lane-B grade. Stage 4 upgrades this to adaptive 3-run."""
+    """Adaptive 3-run Lane-B grade. See module docstring."""
     db = get_db()
     skill = await db.skills.find_one({"_id": skill_id})
     if not skill:
@@ -214,34 +276,51 @@ async def grade_clip_pipeline(
 
     frame_ids_all: list[str] = []
     raw_runs: list[dict] = []
+    valid_runs: list[dict] = []
 
     with tempfile.TemporaryDirectory(prefix="fs-grade-") as tmp:
         tmp_path = Path(tmp)
         clip_path = await _write_clip_tempfile(clip_id, tmp_path)
-        frames = _ffmpeg_extract_frames(clip_path, tmp_path / "f0", offset=0.0)
-        if not frames:
-            raise GradingError("no frames extracted from clip")
-        labeled = await _upload_labeled_frames(frames)
-        frame_ids_all.extend([u for (u, _, _) in labeled])
-        prompt = _build_prompt(skill, [lbl for (_, _, lbl) in labeled], language_name)
-        raw = await call_gemini(
-            prompt=prompt,
-            media_uuids=[u for (u, _, _) in labeled],
-            response_schema=LANE_B_SCHEMA,
+
+        # Run 1 at offset 0.
+        run1, fids1 = await _one_run(
+            skill=skill, caregiver_language_name=language_name,
+            clip_path=clip_path, offset=0.0, out_dir=tmp_path / "f0",
         )
-        raw_runs.append(raw)
+        frame_ids_all.extend(fids1)
+        if run1 is not None:
+            raw_runs.append(run1)
+            valid_runs.append(run1)
 
-    # Validate response.
-    valid = _validate(raw, skill)
-    if not valid:
-        raise GradingError("invalid Gemini response for the only run")
+        need_adaptive = run1 is not None and _has_safety_critical_concern(run1, skill)
 
-    # Map to contract.
+        if need_adaptive:
+            for i, offset in enumerate((0.17, 0.33), start=2):
+                run_i, fids_i = await _one_run(
+                    skill=skill, caregiver_language_name=language_name,
+                    clip_path=clip_path, offset=offset,
+                    out_dir=tmp_path / f"f{i-1}",
+                )
+                frame_ids_all.extend(fids_i)
+                if run_i is not None:
+                    raw_runs.append(run_i)
+                    valid_runs.append(run_i)
+
+    # Validity gate.
+    if need_adaptive:
+        if len(valid_runs) < 2:
+            raise GradingError(
+                f"3-run grading requires ≥2 valid runs; got {len(valid_runs)}"
+            )
+    else:
+        if len(valid_runs) < 1:
+            raise GradingError("1-run grading requires ≥1 valid run; got 0")
+
     return _assemble_contract(
         skill=skill,
         caregiver_id=caregiver_id,
         clip_id=clip_id,
-        valid_runs=[raw],
+        valid_runs=valid_runs,
         raw_runs=raw_runs,
         frame_ids=frame_ids_all,
     )
