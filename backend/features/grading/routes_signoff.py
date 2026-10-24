@@ -117,10 +117,35 @@ async def _signoff(attempt_id: str, body: SignoffBody) -> dict:
                 )
             override = True
         # Add skill to caregiver.cleared_skills via $addToSet (idempotent).
-        await db.caregivers.update_one(
+        add_result = await db.caregivers.update_one(
             {"_id": attempt["caregiver_id"]},
             {"$addToSet": {"cleared_skills": attempt["skill_id"]}},
         )
+        # Channel hook: notify the caregiver ONLY when the $addToSet actually
+        # added the skill (not re-adds). Fire-and-forget — a chat failure must
+        # not block sign-off persistence.
+        if add_result.modified_count:
+            try:
+                from services.channel_service import send_message_async
+                skill_doc = await db.skills.find_one({"_id": attempt["skill_id"]})
+                caregiver_doc = await db.caregivers.find_one({"_id": attempt["caregiver_id"]})
+                lang = (caregiver_doc or {}).get("language") or "en"
+                skill_title = (skill_doc or {}).get("title") or "the skill"
+                if lang in ("es", "tl"):
+                    t = ((skill_doc or {}).get("translations") or {}).get(lang) or {}
+                    if t.get("title"):
+                        skill_title = t["title"]
+                cleared_tmpl = {
+                    "en": "You're cleared for {title}.",
+                    "es": "Estás aprobada para {title}.",
+                    "tl": "Pasado ka na sa {title}.",
+                }[lang if lang in ("es", "tl") else "en"]
+                await send_message_async(
+                    attempt["caregiver_id"],
+                    cleared_tmpl.format(title=skill_title),
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("channel hook on signoff approve failed")
     else:  # send_back
         if not body.note.strip():
             raise HTTPException(
