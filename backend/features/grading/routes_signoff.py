@@ -229,3 +229,21 @@ def attach(router: APIRouter) -> None:
     @router.get("/competency/{caregiver_id}")
     async def get_competency_for(caregiver_id: str):
         return await _competency_for(caregiver_id)
+
+    @router.get("/skill/{skill_id}")
+    async def get_skill(skill_id: str):
+        """Full skill doc (steps + translations) for the Practice UI."""
+        db = get_db()
+        s = await db.skills.find_one({"_id": skill_id})
+        if not s:
+            raise HTTPException(status_code=404, detail="skill not found")
+        return {
+            "skill": {
+                "id": s["_id"],
+                "title": s.get("title"),
+                "steps": s.get("steps", []),
+                "checks": s.get("checks", []),
+                "quiz": s.get("quiz", []),
+                "translations": s.get("translations", {}),
+            }
+        }

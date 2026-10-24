@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState } from "react";
+import React, { createContext, useContext, useEffect, useRef, useState } from "react";
 import { useParams, NavLink, Outlet, useNavigate } from "react-router-dom";
 import { api } from "@/api";
 import { caregiverNav, withCode } from "@/featureRegistry";
@@ -19,24 +19,23 @@ export default function CaregiverLayout({ nav }) {
   const [state, setState] = useState({ status: "loading" });
 
   useEffect(() => {
-    let abort = false;
-    api
-      .get(`/caregivers/by-code/${encodeURIComponent(code)}`)
-      .then((r) => {
-        if (abort) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await api.get(
+          `/caregivers/by-code/${encodeURIComponent(code)}`,
+        );
+        if (cancelled) return;
         setState({ status: "ok", data: r.data });
-      })
-      .catch((e) => {
-        if (abort) return;
+      } catch (e) {
+        if (cancelled) return;
         const s = e?.response?.status;
-        if (s === 404) {
-          setState({ status: "404" });
-        } else {
-          setState({ status: "error", error: e?.message || "failed" });
-        }
-      });
+        if (s === 404) setState({ status: "404" });
+        else setState({ status: "error", error: e?.message || "failed" });
+      }
+    })();
     return () => {
-      abort = true;
+      cancelled = true;
     };
   }, [code]);
 
@@ -152,7 +151,7 @@ export default function CaregiverLayout({ nav }) {
             borderColor: "var(--fs-border)",
           }}
         >
-          <ul className="grid grid-cols-3 font-ui text-xs">
+          <ul className="grid grid-cols-4 font-ui text-xs">
             {items.map((n) => {
               const to = withCode(n.path, code);
               return (

@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { api } from "@/api";
 
 export default function CompetencyPage() {
@@ -64,7 +65,13 @@ function Grouped({ data }) {
                 key={c.id}
                 className="px-4 py-3 flex items-start justify-between gap-3"
               >
-                <div className="font-semibold">{c.name}</div>
+                <Link
+                  to={`/competency/${c.id}`}
+                  className="font-semibold underline-offset-2 hover:underline"
+                  data-testid={`competency-link-${c.id}`}
+                >
+                  {c.name}
+                </Link>
                 <div className="flex flex-wrap justify-end gap-1 max-w-[60%]">
                   {c.cleared.length === 0 ? (
                     <span
