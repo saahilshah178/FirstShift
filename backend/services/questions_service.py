@@ -45,9 +45,11 @@ def answer_question(caregiver_id: str, text: str) -> dict:
     if "error" in container:
         raise container["error"]
     result = container["result"]
-    # Backfill the Phase-1 fields in case something got dropped.
-    result.setdefault("answered_at", datetime.now(timezone.utc).isoformat())
+    # Backfill the Phase-1 fields in case something got dropped. `answered_at`
+    # intentionally defaults to None so waiting_owner responses stay null.
+    result.setdefault("answered_at", None)
     result.setdefault("citations", [])
     result.setdefault("confidence", 0.0)
     result.setdefault("model", "gemini")
+    result.setdefault("status", "waiting_owner")
     return result

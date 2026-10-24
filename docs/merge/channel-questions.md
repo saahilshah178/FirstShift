@@ -6,6 +6,24 @@
 > `messages.channel`) are kept at `"web"` for forward-compatibility; no outbound SMS/WhatsApp
 > code exists in this branch.
 
+## API shape quirks
+
+- **`POST /api/questions/{id}/answer`** accepts `{"text": "..."}`, not `{"answer": "..."}`.
+  The original brief wrote `{"answer": "..."}`. We kept `text` for symmetry with the
+  `questions.text` row field (both describe the "written content" of the underlying
+  utterance); the response field is `delivered_text` (what actually reached the caregiver,
+  possibly translated when `caregiver.language != 'en'`). Pinned in `docs/CONTRACTS.md §1b`.
+
+- **`POST /api/questions/ask` response includes `status`**, matching the stored row
+  (`"answered"` on card/policy hit, `"waiting_owner"` on miss). When `status` is
+  `waiting_owner`:
+  - `answer` is `""`, `citations` is `[]`, `confidence` is `0.0`;
+  - `answered_at` is `null` (both in the response and on the stored row).
+
+  Previous behaviour set `answered_at` on the response regardless of status, which was
+  misleading. The stored row's `answered_at` was already `null` for waiting_owner — only
+  the response was wrong. Pinned in `docs/CONTRACTS.md §1b`.
+
 ## Known drift
 
 Pod's local `main` was reconstructed via local merge of `grading/signoff` + `lessons/record`

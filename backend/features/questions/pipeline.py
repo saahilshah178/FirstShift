@@ -132,10 +132,11 @@ async def answer_question_async(caregiver_id: str, text: str, language: str | No
             "question_id": None,
             "caregiver_id": caregiver_id,
             "question": text,
+            "status": "waiting_owner",
             "answer": "",
             "citations": [],
             "confidence": 0.0,
-            "answered_at": _utcnow(),
+            "answered_at": None,
             "model": "stub",
         }
     lang = language or caregiver.get("language") or "en"
@@ -169,14 +170,16 @@ async def answer_question_async(caregiver_id: str, text: str, language: str | No
             card_id=card_id,
             source=source,
         )
+        answered_at = _utcnow()
         return {
             "question_id": qid,
             "caregiver_id": caregiver_id,
             "question": text,
+            "status": "answered",
             "answer": answer_text,
             "citations": [{"source_title": source_title}],
             "confidence": 1.0 if card_row else 0.75,
-            "answered_at": _utcnow(),
+            "answered_at": answered_at,
             "model": "gemini",
         }
 
@@ -196,10 +199,11 @@ async def answer_question_async(caregiver_id: str, text: str, language: str | No
         "question_id": qid,
         "caregiver_id": caregiver_id,
         "question": text,
+        "status": "waiting_owner",
         "answer": "",
         "citations": [],
         "confidence": 0.0,
-        "answered_at": _utcnow(),
+        "answered_at": None,
         "model": "gemini",
     }
 
