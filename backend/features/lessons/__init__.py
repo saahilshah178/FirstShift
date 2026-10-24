@@ -1,15 +1,43 @@
 """lessons feature.
 
 Routes mounted at `/api/lessons`:
-- GET `/`               -> placeholder marker.
-- GET `/skills`         -> all skills (id, title, step_count, check_count).
-- GET `/caregiver/:id`  -> cleared + remaining skills for a caregiver.
+
+Preserved from Phase 2 (shapes byte-identical):
+- `GET  /`                           -> placeholder marker.
+- `GET  /skills`                     -> all skills (id, title, step_count, check_count).
+- `GET  /caregiver/:id`              -> cleared + remaining skills for a caregiver.
+
+Added by `lessons/record` branch:
+- `POST /uploads`                                   init chunked upload
+- `PUT  /uploads/{upload_id}/chunks/{index}`        raw-bytes chunk
+- `POST /uploads/{upload_id}/complete`              assemble + create job
+- `GET  /jobs`                                      list in-progress + ready + failed jobs
+- `GET  /jobs/{job_id}`                             single job detail
+- `POST /jobs/{job_id}/retry`
+- `PUT  /jobs/{job_id}/draft`
+- `POST /jobs/{job_id}/steps/{n}/frame`
+- `POST /jobs/{job_id}/publish`
+- `POST /skills/{skill_id}/edit`
+- `GET  /skills/{skill_id}`                         full skill doc
+- `PUT  /skills/{skill_id}/translations/{es|tl}`
+- `POST /skills/{skill_id}/translations/{es|tl}/review`
+- `POST /skills/{skill_id}/translations/retry`
 """
 from __future__ import annotations
+
+import asyncio
+import logging
 
 from fastapi import APIRouter, HTTPException
 
 from db import get_db
+
+from .jobs import router as _jobs_router
+from .runner import sweep_stale_jobs
+from .skills_routes import router as _skills_router
+from .uploads import router as _uploads_router
+
+logger = logging.getLogger("firstshift.lessons")
 
 router = APIRouter()
 
@@ -57,3 +85,21 @@ async def caregiver_lessons(caregiver_id: str):
             if s["_id"] not in cleared
         ],
     }
+
+
+# Mount sub-routers (chunked upload, jobs, skill-level ops).
+# These expose the paths documented in the module docstring above.
+router.include_router(_uploads_router)
+router.include_router(_jobs_router)
+router.include_router(_skills_router)
+
+
+@router.on_event("startup")
+async def _on_startup() -> None:
+    """Lazy-sweep any jobs left mid-stage by a prior process."""
+    try:
+        swept = await sweep_stale_jobs()
+        if swept:
+            logger.info("lessons: swept %d stale job(s) at startup", swept)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("lessons: startup sweep failed: %s", exc)
