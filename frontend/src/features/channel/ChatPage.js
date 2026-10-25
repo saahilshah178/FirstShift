@@ -213,7 +213,7 @@ export default function ChatPage() {
             ref={videoInputRef}
             type="file"
             accept="video/mp4,video/webm,video/quicktime"
-            capture="user"
+            capture="environment"
             onChange={onPickVideo}
             data-testid="chat-video-input"
             className="hidden"
