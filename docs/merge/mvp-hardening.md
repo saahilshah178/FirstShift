@@ -24,6 +24,9 @@
 - `backend/scripts/__init__.py`
 - `backend/scripts/faststart_backfill.py`     — one-shot GridFS re-encode with `+faststart`.
 - `backend/scripts/dedupe_skills.py`          — hard-delete loser skills + migrate refs.
+- `backend/scripts/upgrade_glove_removal.py`  — Batch-1 #6 Glove content pass (frames, quiz, es/tl check translations).
+- `backend/scripts/repair_cleared_skills.py`  — Batch-2 #7/#8 strip orphan clears + legacy status backfill.
+- `backend/scripts/cleanup_orphan_drafts.py`  — Batch-2 #13 prune abandoned/duplicate `lesson_jobs` rows.
 
 (More files added per batch — kept in-sync below.)
 
@@ -65,3 +68,152 @@ _Filled in per batch below once the fix lands and the smoke/tester has run._
 ### Batch 1 — media, data integrity
 
 (evidence captured after batch complete)
+
+### Batch 2 — signoff / competency / quiz / lazy edit
+
+Tweaks folded in before the main fixes:
+
+- **TWEAK-A (HEAD /api/media/{uuid})** — `backend/media/routes.py` grows a
+  dedicated `@router.head("/{uuid_str}")` handler. iOS Safari / casting
+  clients that probe size+content-type before `GET`+`Range` now see
+  `200 OK` with `Content-Length`, `Content-Type`, `Accept-Ranges: bytes`
+  and an empty body. Missing uuid still returns `404`. Verified via
+  `curl -I`.
+
+- **TWEAK-B (check-id prefixes)** — audited: Hand hygiene / Blood
+  pressure / Transfer all use `c1..cN` (the schema contract in
+  `features/lessons/schemas.py::validate_analyze`). **Glove removal uses
+  `g1..g7`** (seeded manually in `seed/seed.py::_glove_skill`). One
+  reviewed attempt row (`6853fc06…` / Lucia) references those `g*` ids;
+  renaming would require rewriting that attempt's `checks[].id`. Per
+  decision, **not renamed**. Future AI-authored skills continue to use
+  `c*`; the Glove exception is documented here and intentional.
+
+Fixes:
+
+- **#7 / #8 — orphan clears stripped.**
+  - `backend/scripts/repair_cleared_skills.py` — scans every caregiver,
+    pulls any `cleared_skills` entry that lacks an approving signoff
+    (accepts both `"approve"` and legacy seed value `"approved"`). For
+    each stripped (caregiver, skill) pair, backfills a legacy attempt's
+    `status`/`verdict` if the attempt had neither — using the same
+    mapping as the live grader (`verdict pass → ready_to_sign`,
+    `verdict retry → needs_practice`). Idempotent.
+  - `features/grading/routes_signoff.py::_competency_for` — lazy guard:
+    rebuilds `cleared` from the intersection of `cleared_skills` and
+    approving signoffs; logs a warning on any residual orphan so the
+    data drift is visible even without re-running the script.
+  - Repair-run output (committed as evidence):
+    - stripped `María García → Transfer`,
+    - stripped `Jovelyn Santos → Hand hygiene`,
+    - stripped `Jovelyn Santos → Transfer`,
+    - backfilled attempt `68303aa8` → `needs_practice` ("hero" sign-off
+      moment: Jovelyn now surfaces in the sign-off queue).
+
+- **#9 — override / send-back note on competency detail.**
+  - `frontend/src/features/grading/CompetencyDetailPage.js` — the row's
+    `latest.note` renders as a `<blockquote>` directly under the
+    "Signed by …" line, with warn-coloured left border when it was
+    an `override` or `send_back`. Extra `space-y-3` between the signer
+    line, the note block and the clip replaces the previous cramped
+    `space-y-2`. `data-testid="competency-note-<skillId>"` added.
+
+- **#10 — quiz count is free.**
+  - `features/lessons/jobs.py::_publish_blockers` no longer requires
+    `len(quiz) == 2`. Each present question still needs 3 choices and a
+    valid `answer_index`; 0 questions is allowed.
+  - `features/lessons/schemas.py` — `LANE_B_PROMPT` now asks Gemini for
+    "a short set of 1 to 3 multiple-choice questions" and
+    `validate_analyze` dropped the `len != 2` blocker.
+  - `frontend/src/features/lessons/DraftEditorPage.js` — `+ Add
+    question` header button, `Remove` button per quiz row, empty-state
+    text when there are zero quiz items. New test-ids: `editor-add-quiz`,
+    `editor-quiz-remove-<id>`, `editor-quiz-empty`.
+  - Smoke test: edited Transfer skill from 2 → 1 quiz question, publish
+    returned `{skill_id, version: N+1}` with Spanish+Tagalog translations
+    carrying the single question through.
+
+- **#11 — Spanish/Tagalog glove translations.**
+  - Already landed in Batch 1 fix #6 (`upgrade_glove_removal.py`). Tester
+    confirmed `es` and `tl` check arrays both have length 7. **No commit
+    in Batch 2 for this item.**
+
+- **#12 — quiz choices labelled `1./2./3.` everywhere.**
+  - `frontend/src/features/lessons/SkillDetailPage.js` — the two
+    `String.fromCharCode(65 + i)` sites (English view + translation
+    read-only) now render `${i + 1}.`.
+  - Draft editor already shows raw inputs; added a visible `1./2./3.`
+    label next to each option so authors see the numeric labels they
+    will see at playback time.
+
+- **#13 — Edit skill is lazy; drafts don't accumulate.**
+  - `features/lessons/skills_routes.py::open_edit_job` returns
+    `{"job_id": f"edit-{skill_id}"}` and does NOT insert a `lesson_jobs`
+    row. 404 still fires when the skill is missing.
+  - `features/lessons/jobs.py` understands the `edit-{skill_id}` handle
+    across `GET`, `PUT /draft`, `POST /steps/{n}/frame`, and `POST
+    /publish`:
+    - **GET** synthesises a draft view from the current published skill
+      when there is no DB row (or when the only row is a terminal
+      `published` breadcrumb from a prior session). This keeps the
+      editor URL stable across publish → re-click → re-edit without
+      "already published" dead-ends.
+    - **PUT /draft** materialises the row on first save (requires
+      `draft_rev: 0`) and refuses stale revs with `409` after that.
+    - **POST /publish** rejects with `422 "No changes to publish — edit
+      something first."` when the handle has no live row (user clicked
+      Edit then hit Publish without touching anything).
+    - **source_credit preservation**: on publish, if the editor's
+      `source_credit` is empty, the existing skill's `source_credit`
+      is kept rather than being silently cleared.
+    - **post-publish wipe**: every `lesson_jobs` row for this
+      `skill_id` is deleted after a successful publish. The published
+      skill (`version` bump) is the audit trail; the drafts drawer
+      stays clean.
+  - `backend/scripts/cleanup_orphan_drafts.py` — one-shot: deletes
+    `ready`/`failed` rows older than N minutes (default 60) that either
+    have no `skill_id`, point at a skill that no longer exists, or are
+    sibling-duplicates of the canonical `edit-{skill_id}` handle.
+    Cleanup pass this batch: 4 orphans removed (2 abandoned new-skill
+    drafts + 2 duplicate edit drafts for Blood pressure / Transfer).
+
+- **#14 — chat video button opens the rear camera.**
+  - `frontend/src/features/channel/ChatPage.js` — hidden file input's
+    `capture="user"` → `capture="environment"`. One-liner. Mobile
+    browsers that honour the attribute default to the rear-facing
+    camera; desktop UAs ignore it (file picker still works).
+
+## DONE WHEN evidence — Batch 2
+
+```
+# TWEAK-A
+curl -I "$API/api/media/<vid>" → 200 w/ Content-Length, Accept-Ranges, Content-Type
+
+# TWEAK-B (findings only; no code change)
+Hand hygiene c1..c4 / Blood pressure c1..c5 / Transfer c1..c5 / Glove g1..g7 (intentional)
+
+# #7 / #8
+python -m backend.scripts.repair_cleared_skills
+  → stripped 3 orphan clears; backfilled 1 legacy attempt
+  → re-run → "nothing to strip" (idempotent)
+curl $API/api/grading/queue
+  → Jovelyn Santos / Transfer surfaces under `needs_practice`
+
+# #10
+PUT /jobs/edit-<skill>/draft with quiz=[q1 only]  → 200, draft_rev=1, quiz_count=1
+POST /jobs/edit-<skill>/publish                   → 200, version N+1, es/tl have 1 quiz
+POST /jobs/edit-<skill>/publish (no edits yet)    → 422 "No changes to publish…"
+
+# #13
+POST /skills/<id>/edit → {"job_id":"edit-<id>"}; no lesson_jobs row inserted
+GET  /jobs/edit-<id>   → synthesised draft; draft_rev=0
+PUT  /jobs/edit-<id>/draft → row materialises; draft_rev=1
+POST /jobs/edit-<id>/publish → version N+1; row count for skill → 0
+Click Edit again       → fresh synth; draft_rev=0
+
+# #14
+grep -n 'capture=' frontend/src/features/channel/ChatPage.js
+  → capture="environment"
+python -m backend.scripts.cleanup_orphan_drafts
+  → deleted 4 orphan drafts (and nothing on re-run)
+```
