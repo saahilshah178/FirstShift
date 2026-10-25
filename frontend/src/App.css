@@ -72,9 +72,15 @@ textarea,
         "Helvetica Neue", Arial, sans-serif;
 }
 
+/* Stage 4: `.tap` previously set `display: inline-flex` unconditionally,
+   which fought with Tailwind's `.flex`/`.block`/`.grid` utilities on
+   full-row <Link class="tap flex ...">. We only want the inline-flex
+   layout when the element has NO explicit display utility. */
 .tap {
     min-height: var(--fs-tap);
     min-width: var(--fs-tap);
+}
+.tap:not(.flex):not(.block):not(.grid):not(.inline):not(.hidden) {
     display: inline-flex;
     align-items: center;
     justify-content: center;

@@ -12,20 +12,14 @@ export default function SignoffPage() {
   const [tab, setTab] = useState("ready_to_sign");
 
   useEffect(() => {
-    const ac = new AbortController();
+    // Stage 4-G: shared GET dedupe in api.js collapses the StrictMode
+    // double-mount into one network request.
     api
-      .get("/grading/queue", { signal: ac.signal })
+      .get("/grading/queue")
       .then((r) => setState({ status: "ok", data: r.data }))
-      .catch((e) => {
-        if (
-          e?.name === "CanceledError" ||
-          e?.name === "AbortError" ||
-          e?.code === "ERR_CANCELED"
-        )
-          return;
-        setState({ status: "error", error: e?.message || "failed" });
-      });
-    return () => ac.abort();
+      .catch((e) =>
+        setState({ status: "error", error: e?.message || "failed" }),
+      );
   }, []);
 
   return (

@@ -37,22 +37,14 @@ export default function CaregiverLayout({ nav }) {
 
   useEffect(() => {
     if (needsUpperRedirect) return undefined;
-    const ac = new AbortController();
+    // Stage 4-G: shared GET dedupe in api.js collapses the StrictMode
+    // double-mount into one request. No local AbortController — mixing
+    // signal-based cancellation with the shared promise cache rejects
+    // mount-2's handler with CanceledError and the state never advances.
     api
-      .get(`/caregivers/by-code/${encodeURIComponent(upperCode)}`, {
-        signal: ac.signal,
-      })
+      .get(`/caregivers/by-code/${encodeURIComponent(upperCode)}`)
       .then((r) => setState({ status: "ok", data: r.data }))
       .catch((e) => {
-        // Axios aborts surface as CanceledError (name) / ERR_CANCELED (code);
-        // fetch would use AbortError. Treat all three the same.
-        if (
-          e?.name === "CanceledError" ||
-          e?.name === "AbortError" ||
-          e?.code === "ERR_CANCELED"
-        ) {
-          return;
-        }
         const s = e?.response?.status;
         if (s === 404) {
           setState({ status: "404" });
@@ -60,7 +52,6 @@ export default function CaregiverLayout({ nav }) {
           setState({ status: "error", error: e?.message || "failed" });
         }
       });
-    return () => ac.abort();
   }, [upperCode, needsUpperRedirect]);
 
   if (state.status === "loading") {

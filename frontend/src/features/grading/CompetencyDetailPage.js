@@ -71,6 +71,8 @@ export default function CompetencyDetailPage() {
   };
 
   useEffect(() => {
+    // Stage 4-G: shared GET dedupe in api.js collapses the StrictMode
+    // double-mount into one request per endpoint.
     loadAll();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [caregiverId]);

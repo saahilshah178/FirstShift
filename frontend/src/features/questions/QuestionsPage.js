@@ -8,31 +8,23 @@ export default function QuestionsPage() {
   const [activeId, setActiveId] = useState(null);
   const detailRef = useRef(null);
 
-  const load = useCallback(async (signal) => {
+  const load = useCallback(async () => {
     try {
-      const r = await api.get("/questions/inbox", { signal });
+      const r = await api.get("/questions/inbox");
       setInbox({
         waiting: r.data.waiting || [],
         answered: r.data.answered || [],
       });
     } catch (e) {
-      if (
-        e?.name === "CanceledError" ||
-        e?.name === "AbortError" ||
-        e?.code === "ERR_CANCELED"
-      ) {
-        return;
-      }
       setErr(e?.message || "failed");
     }
   }, []);
 
   useEffect(() => {
-    // Stage 4-G: abort guard silences the StrictMode double-mount dev
-    // dup. Production hits the endpoint once.
-    const ac = new AbortController();
-    load(ac.signal);
-    return () => ac.abort();
+    // Stage 4-G: shared GET dedupe in api.js collapses the StrictMode
+    // double-mount into one network request. Production hits the
+    // endpoint once.
+    load();
   }, [load]);
   useEffect(() => {
     // Stage 4-G: polling trimmed to 10s. The Care Manager inbox doesn't

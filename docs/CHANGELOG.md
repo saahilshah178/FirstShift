@@ -55,18 +55,60 @@ on every agency route). No backend changes.
   No "Back to agency" button (was never present; comment kept
   explaining why).
 
-- **G. Fetch dedupe + polling.** Added AbortController-based cleanup
-  to `useEffect` fetches in TodayPage, SkillsPage, SignoffPage,
-  ClientsPage (including the per-client caregiver-fit parallel
-  fetches), NewHiresPage, QuestionsPage, CompetencyPage. Confirmed via
-  Playwright request-logger: every mount makes exactly 1 request per
-  endpoint (dev StrictMode double-mount is now silenced). Questions
-  polling kept at 10 s (was already there). TodayPage: no interval
-  poll — refreshes on window `focus` + document `visibilitychange`
-  (visible). Other polls kept where they're status-driven:
-  SkillsPage polls 2 s **only while a job is non-terminal**; chat +
-  draft editor + practice result are 2 s during active FSM /
-  processing. All of those exit when the state goes terminal.
+- **G. Shared in-flight GET dedupe in `frontend/src/api.js`.** One
+  abstraction, one place. The axios `api.get` method is wrapped with
+  a Map keyed on `GET:${url}?${JSON.stringify(config.params ?? null)}`;
+  concurrent duplicate GETs join the same underlying promise. Entry
+  evicts on both resolve AND reject via `.finally()`. GETs only —
+  POST/PUT/PATCH/DELETE pass through unchanged so side effects are
+  never collapsed. Not an HTTP cache: fresh fetches run as soon as
+  the first settles. Previous Stage-4 per-page `AbortController +
+  CanceledError` guards were removed from TodayPage, SignoffPage,
+  ClientsPage, NewHiresPage, SkillsPage, QuestionsPage,
+  CompetencyPage, CompetencyDetailPage, SkillDetailPage, and
+  **CaregiverLayout** (the last one HAD to drop its signal-based
+  cancellation because mixing per-call `abort()` with a shared
+  promise cache rejects mount-2's handler with `CanceledError` before
+  it ever reads the resolved value — the 404 state would never land
+  on `/c/BOGUS`). The `useRef` guards (`lastFetchKey`, `didFetch`)
+  that CompetencyDetailPage + SkillDetailPage added earlier are gone;
+  the dedupe map handles that layer too.
+
+  Polling intervals (unchanged, re-audited):
+  - **QuestionsPage**: `/questions/inbox` every **10 s**
+    (constant inlined at `setInterval(() => load(), 10000)`).
+    Verified in a live Playwright request-logger window: 2 hits in
+    11 s (mount + 1 poll).
+  - **TodayPage**: no interval poll — refreshes on window `focus` +
+    document `visibilitychange` (visible). Metric cards don't move
+    second-to-second but should pick up a fresh signoff on tab
+    return.
+  - **SkillsPage**: `/lessons/jobs` every 2 s **only while a job is
+    non-terminal**; terminates when all jobs reach `ready`/`failed`/`published`.
+  - **DraftEditorPage**: `/lessons/jobs/<id>` every 2 s **only while
+    the job is non-terminal**.
+  - **PracticeResultPage**: once-cycle until the attempt reaches a
+    terminal grade.
+  - **ChatPage / AskPage**: caregiver live-conversation polls (2 s
+    and 3 s respectively) — kept, untouched.
+
+  Dedupe receipt (one Playwright pass per route, StrictMode on,
+  2.5 s settle window, request-logger counts /api GETs):
+
+  ```
+  Page         total  unique  dup>1  endpoints
+  /today         1      1       0    ops/today/metrics×1
+  /skills        2      2       0    lessons/skills×1, lessons/jobs×1
+  /signoff       1      1       0    grading/queue×1
+  /clients       5      5       0    ops/clients×1 + 4 per-client caregiver-fit×1 each
+  /questions     1      1       0    questions/inbox×1
+  /new-hires     1      1       0    ops/caregivers?sort=hired_at_desc×1
+  /competency    1      1       0    grading/competency×1
+  ```
+
+  Every endpoint hit exactly once per mount. No duplicates. The dev
+  helper `window.__fsInflight` exposes the Map for one-off console
+  assertions (`__fsInflight.size === 0` after any load settles).
 
 - **H. 480 px overflow sweep — all pass.** See DONE-WHEN table below.
 
@@ -83,94 +125,101 @@ on every agency route). No backend changes.
 | Report near-miss     | ✓            | hidden  | hidden    |
 | Answer a question    | ✓            | hidden  | hidden    |
 
-### Audit — every agency list
+### Audit — every agency list (click-landing verified @ 480 px)
 
-| List                                     | Full-row click? | Notes |
-|------------------------------------------|:---------------:|-------|
-| Today cards                              | ✓               | `<Link>` wrapping each `fs-card`; already shipped. |
-| Clients list (`clients-row-*`)           | — intentional   | Each client card does NOT navigate — there is no "client detail" page. Caregiver names inside the fit sections ARE `<Link>` rows (full width). |
-| Skills published (`skills-row-*`)        | ✓               | Converted. |
-| Skills drafts/in-progress (`job-row-*`)  | ✓               | Converted. |
-| Sign-off rows (`signoff-row-*`)          | ✓               | Already shipped. |
-| Questions rows (`questions-row-*`)       | ✓               | Converted from `<li onClick>` to `<button>`. |
-| New Hires rows (`newhires-row-*`)        | ✓               | Converted; links to the caregiver's competency file. |
-| Competency groups (`competency-link-*`)  | ✓               | Converted. |
-| Caregivers picker modal rows             | ✓               | Already a full `<button>`. |
-| Caregiver lessons rows                   | ✓               | Already shipped. |
+Playwright pass: click first row 20 px from the right edge (outside
+title column) → assert nav OR active state. Full receipt in the
+Stage-4 dev console log; summary below.
+
+| List                                     | Full-row click? | Click lands                                     |
+|------------------------------------------|:---------------:|-------------------------------------------------|
+| Today cards (`today-card-*`)             | ✓               | nav → `/caregivers?filter=…` / `/signoff` / `/questions` (first card tested) |
+| Clients list (`clients-row-*`)           | — intentional   | NO client-detail page exists. Caregiver `<Link>`s inside each client ARE full-row (`clients-<id>-cleared-row-*`, `clients-<id>-almost-row-*`). |
+| Skills published (`skills-row-*`)        | ✓               | nav → `/skills/<id>`                            |
+| Skills drafts/in-progress (`job-row-*`)  | ✓               | nav → `/skills/drafts/<id>` (no draft rows in current seed; selector + Link covered) |
+| Sign-off rows (`signoff-row-*`)          | ✓               | nav → `/signoff/<id>`                           |
+| Questions rows (`questions-row-*`)       | ✓               | opens stacked detail panel (`question-detail-<id>`) on same URL — single click |
+| New Hires rows (`newhires-row-*`)        | ✓               | nav → `/competency/<id>`                        |
+| Competency groups container              | — intentional   | wrapping `<ul>` is layout only; inner Links handle nav |
+| Competency link rows (`competency-link-*`) | ✓             | nav → `/competency/<id>`                        |
+| Caregivers picker modal rows             | ✓               | nav → `/c/<code>` (full-width `<button>`)       |
+| Caregiver lessons rows                   | ✓               | opens that skill's lesson in the chat FSM       |
 
 ### Files changed
 
+- `frontend/src/api.js` — shared in-flight GET dedupe map; wrapped
+  `api.get`; `window.__fsInflight` dev helper.
 - `frontend/src/hooks/useRole.js` — new `useCaps()` capability object.
-- `frontend/src/features/ops/TodayPage.js` — on-focus refresh, abort
-  cleanup, three-card layout tightened for 480 px.
-- `frontend/src/features/ops/ClientsPage.js` — abort cleanup.
+- `frontend/src/App.css` — `.tap` no longer forces `display: inline-flex`
+  when the element already has a Tailwind display utility (`flex` /
+  `block` / `grid` / `inline` / `hidden`). Lets full-row `<Link class="tap flex ...">` keep their intended layout.
+- `frontend/src/features/ops/TodayPage.js` — on-focus refresh,
+  dedupe-aware fetch, three-card layout tightened for 480 px.
+- `frontend/src/features/ops/ClientsPage.js` — dedupe-aware fetch
+  (`cancelled` flag only, no AbortController).
 - `frontend/src/features/ops/NewHiresPage.js` — full-row Link,
-  break-words, abort cleanup.
+  break-words, dedupe-aware fetch.
 - `frontend/src/features/lessons/SkillsPage.js` — `useCaps`, title
-  wrap, removed role nag, abort cleanup, jobs list full-row Link.
+  wrap, removed role nag, dedupe-aware fetch, jobs list full-row Link.
 - `frontend/src/features/lessons/SkillDetailPage.js` — `useCaps`,
   title wrap, header stacks on narrow widths so three right-aligned
-  buttons don't squeeze the h1 into vertical text.
+  buttons don't squeeze the h1 into vertical text, dedupe-aware fetch.
 - `frontend/src/features/lessons/DraftEditorPage.js` — `useCaps`,
   gate copy reworded to drop "Switch to Care Manager".
 - `frontend/src/features/lessons/RecordPage.js` — `useCaps`, gate
   copy reworded.
 - `frontend/src/features/grading/CompetencyPage.js` — full-row Link,
-  break-words, abort cleanup.
-- `frontend/src/features/grading/CompetencyDetailPage.js` — `useCaps`.
+  break-words, dedupe-aware fetch.
+- `frontend/src/features/grading/CompetencyDetailPage.js` — `useCaps`,
+  dedupe-aware fetch (removed `didFetch` useRef guard).
 - `frontend/src/features/grading/SignoffPage.js` — row title wrap,
-  abort cleanup.
+  dedupe-aware fetch.
 - `frontend/src/features/grading/SignoffDetailPage.js` — `useCaps`,
   dropped "Switch to Care Manager" nag; "Read only" chip instead.
 - `frontend/src/features/questions/QuestionsPage.js` — stacked
-  layout, full-row `<button>`, abort cleanup, polling stayed at 10 s,
-  nag removed.
+  layout, full-row `<button>`, dedupe-aware fetch, polling stayed at
+  10 s, nag removed.
 - `frontend/src/shell/AgencyShell.js` — opener-ref focus-return on
   modal close; `aria-label="Close"`.
-- `frontend/src/shell/CaregiverLayout.js` — 404 copy updated.
+- `frontend/src/shell/CaregiverLayout.js` — 404 copy updated;
+  dedupe-aware fetch (removed AbortController; mixing per-call abort
+  with the shared cache rejected mount-2 handlers with CanceledError).
 
 ### DONE-WHEN self-check
 
 | Check | Result |
 |-------|--------|
-| 480 px overflow — `/today`                     | pass (vw=480 doc.sw=480 frame.sw=480 hScroll=false) |
-| 480 px overflow — `/skills`                    | pass (vw=480 doc.sw=480 frame.sw=480 hScroll=false) |
-| 480 px overflow — `/signoff`                   | pass (vw=480 doc.sw=480 frame.sw=480 hScroll=false) |
-| 480 px overflow — `/clients`                   | pass (vw=480 doc.sw=480 frame.sw=480 hScroll=false) |
-| 480 px overflow — `/questions`                 | pass (vw=480 doc.sw=480 frame.sw=480 hScroll=false) |
-| 480 px overflow — `/new-hires`                 | pass (vw=480 doc.sw=480 frame.sw=480 hScroll=false) |
-| 480 px overflow — `/competency`                | pass (vw=480 doc.sw=480 frame.sw=480 hScroll=false) |
-| 480 px overflow — `/competency/<id>`           | pass (vw=480 doc.sw=480 frame.sw=480 hScroll=false) |
-| 480 px overflow — `/skills/<id>`               | pass (vw=480 doc.sw=480 frame.sw=480 hScroll=false; buttons stack beneath title) |
-| Scheduler: no edit/archive/signoff/near-miss/replace-source buttons | pass (Playwright `document.body.innerText` scans confirm all missing) |
+| 480 px overflow — `/today`                     | pass (vw=480 doc.sw=480 overflow=none) |
+| 480 px overflow — `/skills`                    | pass (vw=480 doc.sw=480 overflow=none) |
+| 480 px overflow — `/signoff`                   | pass (vw=480 doc.sw=480 overflow=none) |
+| 480 px overflow — `/clients`                   | pass (vw=480 doc.sw=480 overflow=none) |
+| 480 px overflow — `/questions`                 | pass (vw=480 doc.sw=480 overflow=none) |
+| 480 px overflow — `/new-hires`                 | pass (vw=480 doc.sw=480 overflow=none) |
+| 480 px overflow — `/competency`                | pass (vw=480 doc.sw=480 overflow=none) |
+| 480 px overflow — `/caregivers`                | pass (vw=480 doc.sw=480 overflow=none) |
+| 480 px overflow — `/competency/<id>`           | pass (vw=480 doc.sw=480 overflow=none) |
+| 480 px overflow — `/skills/<id>`               | pass (vw=480 doc.sw=480 overflow=none; buttons stack beneath title) |
+| 480 px overflow — `/signoff/<id>`              | pass (vw=480 doc.sw=480 overflow=none) |
+| 480 px overflow — `/c/BOGUS` @ 390 px          | pass (vw=390 doc.sw=390 overflow=none) |
+| Scheduler: no edit/archive/signoff/near-miss/replace-source buttons | pass (role-gated via `useCaps`) |
 | Scheduler: no "Switch to Care Manager" nag    | pass (text scan returns false on every page) |
 | Trainer: Edit skill visible, Archive/Replace source hidden | pass |
 | Trainer: Approve/Send back hidden              | pass |
 | Trainer: Report near-miss hidden               | pass |
 | Care Manager: all controls present (regression) | pass |
 | Questions: first-click opens detail            | pass (Playwright click → `question-detail-<id>` present) |
-| /c/BOGUS: "Code not found", no "Back to agency" | pass |
+| /c/BOGUS: "Code not found", no "Back to agency" | pass (body text = "Code not found\\n\\nPlease check your link or contact your coordinator.") |
+| /c/2TBAFX regression (happy path still works)  | pass (`caregiver-shell` renders) |
 | Caregivers modal: `aria-label="Close"`         | pass |
 | Caregivers modal: Escape closes, focus returns to opener | pass |
-| Fetch dedupe: every page = 1× per endpoint     | pass (TodayPage, SkillsPage, SignoffPage, ClientsPage × 5, NewHiresPage, QuestionsPage, CompetencyPage all 1×) |
-| Questions polling @ 10 s                       | pass (code constant; interval runs every 10 000 ms) |
-
-### Known no-op polls (sanity audit)
-
-- `ChatPage` polls `/channel/messages` every 2 s — caregiver live
-  conversation. Kept.
-- `AskPage` polls `/questions/list` every 3 s — caregiver waiting for
-  an answer. Kept.
-- `SkillsPage` polls `/lessons/jobs` every 2 s only while at least one
-  job is in a non-terminal state. Kept.
-- `DraftEditorPage` polls `/lessons/jobs/<id>` every 2 s only while
-  the job is non-terminal. Kept.
-- `PracticeResultPage` polls once-cycle until the attempt reaches a
-  terminal grade. Kept.
+| Fetch dedupe: every page = 1× per endpoint     | pass (Playwright request-logger, 2.5 s window: 0 duplicates across 7 agency pages, dedupe map in `api.js`) |
+| Questions polling @ 10 s                       | pass (2 hits in 11 s window; `setInterval` constant 10000 ms) |
 
 ### No CONTRACTS drift
 
-Stage 4 is UI-only; no backend changes; no new endpoints.
+Stage 4 is UI-only; no backend changes; no new endpoints. The shared
+dedupe map lives entirely in `frontend/src/api.js` and is invisible to
+the backend (identical GETs produce one wire request).
 
 ---
 

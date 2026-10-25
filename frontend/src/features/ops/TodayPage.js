@@ -9,29 +9,19 @@ export default function TodayPage() {
   const [drilldown, setDrilldown] = useState({ open: false, rows: null });
 
   const fetchMetrics = React.useCallback(() => {
-    const ac = new AbortController();
     api
-      .get("/ops/today/metrics", { signal: ac.signal })
+      .get("/ops/today/metrics")
       .then((r) => setMetrics({ status: "ok", data: r.data }))
-      .catch((e) => {
-        if (
-          e?.name === "CanceledError" ||
-          e?.name === "AbortError" ||
-          e?.code === "ERR_CANCELED"
-        ) {
-          return;
-        }
-        setMetrics({ status: "error", error: e?.message || "failed" });
-      });
-    return ac;
+      .catch((e) =>
+        setMetrics({ status: "error", error: e?.message || "failed" }),
+      );
   }, []);
 
   useEffect(() => {
-    // Stage 4-G: AbortController cleanup silences the StrictMode
-    // double-mount dev-only duplicate; a single request lands in
-    // production. The cleanup also protects stale setStates.
-    const ac = fetchMetrics();
-    return () => ac.abort();
+    // Stage 4-G: the shared GET dedupe in api.js collapses the
+    // StrictMode double-mount into a single network request. No local
+    // AbortController required.
+    fetchMetrics();
   }, [fetchMetrics]);
 
   // Stage 4-G: Today refreshes on tab focus / visibility change, not

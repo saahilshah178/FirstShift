@@ -15,20 +15,14 @@ export default function NewHiresPage() {
   const [state, setState] = useState({ status: "loading" });
 
   useEffect(() => {
-    const ac = new AbortController();
+    // Stage 4-G: shared GET dedupe in api.js collapses the StrictMode
+    // double-mount into one network request.
     api
-      .get("/ops/caregivers?sort=hired_at_desc", { signal: ac.signal })
+      .get("/ops/caregivers?sort=hired_at_desc")
       .then((r) => setState({ status: "ok", rows: r.data.caregivers }))
-      .catch((e) => {
-        if (
-          e?.name === "CanceledError" ||
-          e?.name === "AbortError" ||
-          e?.code === "ERR_CANCELED"
-        )
-          return;
-        setState({ status: "error", error: e?.message || "failed" });
-      });
-    return () => ac.abort();
+      .catch((e) =>
+        setState({ status: "error", error: e?.message || "failed" }),
+      );
   }, []);
 
   return (

@@ -42,23 +42,17 @@ export default function SkillsPage() {
   const [err, setErr] = useState(null);
 
   const load = useMemo(
-    () => async (signal) => {
+    () => async () => {
       try {
         const [s, j] = await Promise.all([
-          api.get("/lessons/skills", { signal }),
+          api.get("/lessons/skills"),
           canRecord
-            ? api.get("/lessons/jobs", { signal })
+            ? api.get("/lessons/jobs")
             : Promise.resolve({ data: { jobs: [] } }),
         ]);
         setSkills(s.data.skills || []);
         setJobs(j.data.jobs || []);
       } catch (e) {
-        if (
-          e?.name === "CanceledError" ||
-          e?.name === "AbortError" ||
-          e?.code === "ERR_CANCELED"
-        )
-          return;
         setErr(e?.message || "failed");
       }
     },
@@ -66,9 +60,9 @@ export default function SkillsPage() {
   );
 
   useEffect(() => {
-    const ac = new AbortController();
-    load(ac.signal);
-    return () => ac.abort();
+    // Stage 4-G: shared GET dedupe in api.js collapses the StrictMode
+    // double-mount into one network request.
+    load();
   }, [load]);
 
   // Poll jobs when some are active.

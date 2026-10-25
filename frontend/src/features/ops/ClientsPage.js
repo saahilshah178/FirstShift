@@ -7,35 +7,36 @@ export default function ClientsPage() {
   const [fit, setFit] = useState({}); // client_id -> {cleared, almost_ready}
 
   useEffect(() => {
-    const ac = new AbortController();
+    // Stage 4-G: shared GET dedupe in api.js handles StrictMode. Both
+    // the clients list AND the per-client caregiver-fit fan-out are
+    // GETs so duplicate mounts share one request each.
+    let cancelled = false;
     (async () => {
       try {
-        const r = await api.get("/ops/clients", { signal: ac.signal });
+        const r = await api.get("/ops/clients");
+        if (cancelled) return;
         setState({ status: "ok", rows: r.data.clients });
         // Fetch caregiver-fit for every client in parallel.
         const fits = await Promise.all(
           r.data.clients.map((c) =>
             api
-              .get(`/ops/clients/${c.id}/caregiver-fit`, { signal: ac.signal })
+              .get(`/ops/clients/${c.id}/caregiver-fit`)
               .then((rr) => [c.id, rr.data])
               .catch(() => [c.id, { cleared: [], almost_ready: [] }]),
           ),
         );
-        if (ac.signal.aborted) return;
+        if (cancelled) return;
         const map = {};
         for (const [id, data] of fits) map[id] = data;
         setFit(map);
       } catch (e) {
-        if (
-          e?.name === "CanceledError" ||
-          e?.name === "AbortError" ||
-          e?.code === "ERR_CANCELED"
-        )
-          return;
+        if (cancelled) return;
         setState({ status: "error", error: e?.message || "failed" });
       }
     })();
-    return () => ac.abort();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   return (

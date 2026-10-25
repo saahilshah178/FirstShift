@@ -30,6 +30,8 @@ export default function SkillDetailPage() {
     [skillId],
   );
   useEffect(() => {
+    // Stage 4-G: shared GET dedupe in api.js collapses the StrictMode
+    // double-mount into one network request.
     load();
   }, [load]);
 
