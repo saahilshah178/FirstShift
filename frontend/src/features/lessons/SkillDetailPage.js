@@ -97,6 +97,24 @@ export default function SkillDetailPage() {
           >
             Edit skill
           </button>
+          <button
+            type="button"
+            onClick={async () => {
+              if (!window.confirm(`Archive "${skill.title}"? Caregivers and the Skills list will stop seeing it. You can unarchive later.`)) return;
+              try {
+                await api.delete(`/lessons/skills/${skillId}`);
+                nav("/skills");
+              } catch (e) {
+                const detail = e?.response?.data?.detail;
+                setErr(typeof detail === "string" ? detail : e?.message || "archive failed");
+              }
+            }}
+            data-testid="skill-archive-btn"
+            className="tap px-3 text-sm font-ui rounded-full border"
+            style={{ borderColor: "var(--fs-border)", color: "var(--fs-fail)" }}
+          >
+            Archive
+          </button>
           <Link to="/skills" className="text-sm font-ui" data-testid="skill-back">
             Back
           </Link>

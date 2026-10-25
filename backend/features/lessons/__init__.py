@@ -28,7 +28,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
 from db import get_db
 
@@ -48,9 +48,10 @@ async def placeholder() -> dict:
 
 
 @router.get("/skills")
-async def list_skills():
+async def list_skills(include_archived: bool = Query(False)):
     db = get_db()
-    skills = await db.skills.find({}).to_list(length=100)
+    query: dict = {} if include_archived else {"archived": {"$ne": True}}
+    skills = await db.skills.find(query).to_list(length=200)
     return {
         "skills": [
             {
@@ -58,6 +59,7 @@ async def list_skills():
                 "title": s.get("title"),
                 "step_count": len(s.get("steps", [])),
                 "check_count": len(s.get("checks", [])),
+                "archived": bool(s.get("archived", False)),
             }
             for s in skills
         ]
@@ -70,7 +72,7 @@ async def caregiver_lessons(caregiver_id: str):
     caregiver = await db.caregivers.find_one({"_id": caregiver_id})
     if not caregiver:
         raise HTTPException(status_code=404, detail="caregiver not found")
-    all_skills = await db.skills.find({}).to_list(length=100)
+    all_skills = await db.skills.find({"archived": {"$ne": True}}).to_list(length=200)
     cleared = set(caregiver.get("cleared_skills") or [])
     return {
         "caregiver": {"id": caregiver["_id"], "name": caregiver.get("name")},

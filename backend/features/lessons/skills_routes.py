@@ -44,6 +44,7 @@ async def get_skill(skill_id: str) -> dict:
         "version": int(doc.get("version") or 1),
         "source_credit": doc.get("source_credit") or "",
         "video_id": doc.get("video_id"),
+        "archived": bool(doc.get("archived", False)),
         "steps": doc.get("steps") or [],
         "checks": doc.get("checks") or [],
         "quiz": doc.get("quiz") or [],
@@ -65,6 +66,36 @@ def _normalise_translation(t: Any) -> dict:
         "quiz": t.get("quiz") or [],
         "status": t.get("status") or "machine",
     }
+
+
+@router.delete("/skills/{skill_id}")
+async def archive_skill(skill_id: str) -> dict:
+    """Soft-delete: sets `archived: true` on the skill row.
+
+    GET /skills excludes archived by default; GET /skills?include_archived=true
+    returns them. No cascade — attempts/signoffs/cleared_skills references stay.
+    """
+    db = get_db()
+    result = await db.skills.update_one(
+        {"_id": skill_id},
+        {"$set": {"archived": True, "archived_at": utcnow_iso()}},
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="skill not found")
+    return {"ok": True, "skill_id": skill_id, "archived": True}
+
+
+@router.post("/skills/{skill_id}/unarchive")
+async def unarchive_skill(skill_id: str) -> dict:
+    """Reverse of the archive op (future UI surface)."""
+    db = get_db()
+    result = await db.skills.update_one(
+        {"_id": skill_id},
+        {"$set": {"archived": False}, "$unset": {"archived_at": ""}},
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="skill not found")
+    return {"ok": True, "skill_id": skill_id, "archived": False}
 
 
 @router.post("/skills/{skill_id}/edit")
