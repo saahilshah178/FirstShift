@@ -1,11 +1,12 @@
 import React, { useEffect, useState } from "react";
 import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
 import { agencyNav } from "@/featureRegistry";
-import { api } from "@/api";
+import { api, setForbiddenHandler } from "@/api";
+import { ROLES, writeRole } from "@/hooks/useRole";
+import { ToastProvider, useForbiddenToast } from "@/shell/Toasts";
 import { X, UserRound } from "lucide-react";
 
 const ROLE_KEY = "firstshift.agency_role";
-const ROLES = ["Care Manager", "Trainer", "Scheduler"];
 
 export default function AgencyShell({ children, nav }) {
   const navItems = agencyNav(nav);
@@ -16,25 +17,42 @@ export default function AgencyShell({ children, nav }) {
   const [showCaregiverPicker, setShowCaregiverPicker] = useState(false);
 
   useEffect(() => {
-    localStorage.setItem(ROLE_KEY, role);
+    writeRole(role);
   }, [role]);
 
   return (
-    <div className="fs-frame" data-side="agency" data-testid="agency-shell">
-      <TopBar
-        role={role}
-        onRoleChange={setRole}
-        onOpenPicker={() => setShowCaregiverPicker(true)}
-      />
-      <main className="flex-1 px-5 py-5 pb-24" data-testid="agency-main">
-        {children}
-      </main>
-      <BottomNav items={navItems} currentPath={location.pathname} />
-      {showCaregiverPicker ? (
-        <CaregiverPicker onClose={() => setShowCaregiverPicker(false)} />
-      ) : null}
-    </div>
+    <ToastProvider>
+      <ForbiddenToastBridge />
+      <div className="fs-frame" data-side="agency" data-testid="agency-shell">
+        <TopBar
+          role={role}
+          onRoleChange={setRole}
+          onOpenPicker={() => setShowCaregiverPicker(true)}
+        />
+        <main className="flex-1 px-5 py-5 pb-24" data-testid="agency-main">
+          {children}
+        </main>
+        <BottomNav items={navItems} currentPath={location.pathname} />
+        {showCaregiverPicker ? (
+          <CaregiverPicker onClose={() => setShowCaregiverPicker(false)} />
+        ) : null}
+      </div>
+    </ToastProvider>
   );
+}
+
+/**
+ * Hook into the api 403 interceptor so the toast provider in this
+ * subtree receives the forbidden notification. Lives inside the
+ * provider so `useToasts()` resolves.
+ */
+function ForbiddenToastBridge() {
+  const showForbidden = useForbiddenToast();
+  useEffect(() => {
+    setForbiddenHandler(showForbidden);
+    return () => setForbiddenHandler(null);
+  }, [showForbidden]);
+  return null;
 }
 
 function TopBar({ role, onRoleChange, onOpenPicker }) {
@@ -153,13 +171,31 @@ function CaregiverPicker({ onClose }) {
       .catch((e) => setErr(e?.message || "failed to load"));
   }, []);
 
+  // a11y: Escape closes the modal. Scoped to this component (unmounts
+  // when the dialog closes) so it doesn't fight other listeners.
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
   return (
     <div
       className="fixed inset-0 z-30 flex items-end sm:items-center justify-center"
       style={{ background: "rgba(28,22,17,0.55)" }}
       role="dialog"
       aria-modal="true"
+      aria-labelledby="caregiver-picker-title"
       data-testid="caregiver-picker"
+      onClick={(e) => {
+        // Click on backdrop (not the inner card) also closes.
+        if (e.target === e.currentTarget) onClose();
+      }}
     >
       <div
         className="w-full sm:rounded-xl sm:max-w-md fs-card border-t sm:border"
@@ -169,15 +205,20 @@ function CaregiverPicker({ onClose }) {
           className="flex items-center justify-between px-5 py-3 border-b"
           style={{ borderColor: "var(--fs-border)" }}
         >
-          <h2 className="text-lg font-semibold">Open caregiver view</h2>
+          <h2
+            id="caregiver-picker-title"
+            className="text-lg font-semibold"
+          >
+            Open caregiver view
+          </h2>
           <button
             type="button"
             onClick={onClose}
             data-testid="caregiver-picker-close"
-            aria-label="Close"
+            aria-label="Close caregiver picker"
             className="tap rounded-full"
           >
-            <X size={18} />
+            <X size={18} aria-hidden="true" />
           </button>
         </div>
         <div className="px-2 py-2 max-h-[70vh] overflow-y-auto fs-divider">

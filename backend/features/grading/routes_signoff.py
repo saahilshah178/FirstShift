@@ -14,12 +14,16 @@ import uuid
 from datetime import datetime, timezone
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from db import get_db
+from roles import Role, require_role
 
 logger = logging.getLogger("firstshift.grading.signoff")
+
+# Signoff is the only gated action in this file — Care Manager only.
+_SIGNOFF_ROLE = require_role({Role.CARE_MANAGER})
 
 
 # ---- queue ----
@@ -185,12 +189,30 @@ async def _competency_for(caregiver_id: str) -> dict:
         raise HTTPException(status_code=404, detail="caregiver not found")
 
     skills = await db.skills.find({}).to_list(length=100)
-    cleared = set(caregiver.get("cleared_skills") or [])
+    cleared_raw = set(caregiver.get("cleared_skills") or [])
 
     # Gather all attempts + signoffs for this caregiver.
     attempts = await db.attempts.find({"caregiver_id": caregiver_id}).sort("created_at", -1).to_list(length=500)
     signoffs = await db.signoffs.find({"caregiver_id": caregiver_id}).to_list(length=500)
     signoff_by_attempt = {s["attempt_id"]: s for s in signoffs}
+
+    # Lazy guard (belt + suspenders): filter cleared_skills down to those
+    # that actually have an approving signoff. Accepts both "approve" and
+    # legacy seed value "approved". If anything slips through here, log it
+    # so Care Managers see something is off even without running the repair
+    # script. See scripts/repair_cleared_skills.py for the one-shot cleanup.
+    APPROVE_VALUES = {"approve", "approved"}
+    skills_with_approve = {
+        s.get("skill_id") for s in signoffs
+        if s.get("decision") in APPROVE_VALUES
+    }
+    orphan_clears = cleared_raw - skills_with_approve
+    if orphan_clears:
+        logger.warning(
+            "orphan clears for caregiver %s: %s (treated as not_cleared)",
+            caregiver_id, sorted(orphan_clears),
+        )
+    cleared = cleared_raw & skills_with_approve
 
     rows: list[dict] = []
     for skill in skills:
@@ -248,7 +270,11 @@ def attach(router: APIRouter) -> None:
         return await _queue()
 
     @router.post("/attempts/{attempt_id}/signoff")
-    async def post_signoff(attempt_id: str, body: SignoffBody):
+    async def post_signoff(
+        attempt_id: str,
+        body: SignoffBody,
+        _role: str = Depends(_SIGNOFF_ROLE),
+    ):
         return await _signoff(attempt_id, body)
 
     @router.get("/competency/{caregiver_id}")

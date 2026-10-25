@@ -16,9 +16,10 @@ import tempfile
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from db import get_db
+from roles import Role, require_role
 
 from .runner import kick_job
 from .transcode import ffprobe
@@ -31,6 +32,9 @@ CHUNK_SIZE = 8 * 1024 * 1024          # 8 MB
 STAGING_ROOT = Path(tempfile.gettempdir()) / "lessons"
 ACCEPTED_INIT_TYPES = {"video/mp4", "video/quicktime", "video/webm"}
 
+# Role gate — recording a new skill is Care Manager + Trainer only.
+_UPLOAD_ROLE = require_role({Role.CARE_MANAGER, Role.TRAINER})
+
 router = APIRouter()
 
 
@@ -39,7 +43,7 @@ def _staging_dir(upload_id: str) -> Path:
 
 
 @router.post("/uploads")
-async def init_upload(body: dict) -> dict:
+async def init_upload(body: dict, _role: str = Depends(_UPLOAD_ROLE)) -> dict:
     """Open a chunked upload.
 
     Body: `{filename, size, content_type}`.
@@ -66,7 +70,12 @@ async def init_upload(body: dict) -> dict:
 
 
 @router.put("/uploads/{upload_id}/chunks/{index}")
-async def put_chunk(upload_id: str, index: int, request: Request) -> dict:
+async def put_chunk(
+    upload_id: str,
+    index: int,
+    request: Request,
+    _role: str = Depends(_UPLOAD_ROLE),
+) -> dict:
     sd = _staging_dir(upload_id)
     if not sd.exists():
         raise HTTPException(status_code=404, detail="upload not found")
@@ -80,7 +89,11 @@ async def put_chunk(upload_id: str, index: int, request: Request) -> dict:
 
 
 @router.post("/uploads/{upload_id}/complete")
-async def complete_upload(upload_id: str, body: dict | None = None) -> dict:
+async def complete_upload(
+    upload_id: str,
+    body: dict | None = None,
+    _role: str = Depends(_UPLOAD_ROLE),
+) -> dict:
     """Assemble chunks, probe the real file, create a `lesson_jobs` row and kick the pipeline."""
     sd = _staging_dir(upload_id)
     if not sd.exists():

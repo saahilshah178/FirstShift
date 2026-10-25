@@ -91,18 +91,23 @@ export default function CaregiverLessonsPage() {
             {remaining.map((s) => (
               <li
                 key={s.id}
-                className="px-4 py-3 flex items-center justify-between"
+                className="px-4 py-3 flex items-center justify-between gap-3"
               >
-                <div>
-                  <div className="font-semibold">{s.title}</div>
+                <div className="min-w-0">
+                  <div className="font-semibold leading-snug">{s.title}</div>
                   <div
-                    className="text-xs font-ui"
+                    className="text-xs font-ui mt-0.5"
                     style={{ color: "var(--fs-muted)" }}
                   >
                     {s.step_count} steps
                   </div>
                 </div>
-                <span className="fs-chip">to do</span>
+                <span
+                  className={`fs-chip whitespace-nowrap ${s.has_pending_attempt ? "fs-chip-warn" : ""}`}
+                  data-testid={`caregiver-lesson-chip-${s.id}`}
+                >
+                  {s.has_pending_attempt ? "awaiting sign-off" : "to do"}
+                </span>
               </li>
             ))}
           </ul>

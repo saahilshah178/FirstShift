@@ -1,14 +1,14 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, absoluteUrl } from "@/api";
-
-const ROLE_KEY = "firstshift.agency_role";
+import { useRole, canEditSkill, canArchiveSkill } from "@/hooks/useRole";
 
 export default function SkillDetailPage() {
   const { skillId } = useParams();
   const nav = useNavigate();
-  const role = localStorage.getItem(ROLE_KEY) || "Care Manager";
-  const allowed = role === "Care Manager";
+  const role = useRole();
+  const canEdit = canEditSkill(role);
+  const canArchive = canArchiveSkill(role);
   const [skill, setSkill] = useState(null);
   const [err, setErr] = useState(null);
   const [lang, setLang] = useState("en");
@@ -29,20 +29,6 @@ export default function SkillDetailPage() {
   useEffect(() => {
     load();
   }, [load]);
-
-  if (!allowed) {
-    return (
-      <section className="space-y-3" data-testid="skill-detail-gate">
-        <h1 className="text-2xl font-semibold">Skill</h1>
-        <p
-          className="text-sm font-ui fs-card px-4 py-3"
-          style={{ color: "var(--fs-muted)" }}
-        >
-          Switch to Care Manager to record skills.
-        </p>
-      </section>
-    );
-  }
 
   if (err && !skill) {
     return (
@@ -88,15 +74,37 @@ export default function SkillDetailPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={openEdit}
-            data-testid="skill-edit-btn"
-            className="tap px-3 text-sm font-ui rounded-full border"
-            style={{ borderColor: "var(--fs-border)" }}
-          >
-            Edit skill
-          </button>
+          {canEdit ? (
+            <button
+              type="button"
+              onClick={openEdit}
+              data-testid="skill-edit-btn"
+              className="tap px-3 text-sm font-ui rounded-full border"
+              style={{ borderColor: "var(--fs-border)" }}
+            >
+              Edit skill
+            </button>
+          ) : null}
+          {canArchive ? (
+            <button
+              type="button"
+              onClick={async () => {
+                if (!window.confirm(`Archive "${skill.title}"? Caregivers and the Skills list will stop seeing it. You can unarchive later.`)) return;
+                try {
+                  await api.delete(`/lessons/skills/${skillId}`);
+                  nav("/skills");
+                } catch (e) {
+                  const detail = e?.response?.data?.detail;
+                  setErr(typeof detail === "string" ? detail : e?.message || "archive failed");
+                }
+              }}
+              data-testid="skill-archive-btn"
+              className="tap px-3 text-sm font-ui rounded-full border"
+              style={{ borderColor: "var(--fs-border)", color: "var(--fs-fail)" }}
+            >
+              Archive
+            </button>
+          ) : null}
           <Link to="/skills" className="text-sm font-ui" data-testid="skill-back">
             Back
           </Link>
@@ -143,8 +151,35 @@ export default function SkillDetailPage() {
 }
 
 function EnglishView({ skill }) {
+  const videoRef = useRef(null);
+  const playFrom = (startSeconds) => {
+    const v = videoRef.current;
+    if (!v) return;
+    try {
+      v.currentTime = Math.max(0, Number(startSeconds) || 0);
+      // Resume playback and scroll the player into view so the caregiver
+      // sees the frame they jumped to.
+      const p = v.play();
+      if (p && p.catch) p.catch(() => {});
+      v.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    } catch {
+      /* ignored — some browsers reject seek before metadata loaded */
+    }
+  };
   return (
     <div className="space-y-5" data-testid="skill-en-view">
+      {skill.video_id ? (
+        <video
+          ref={videoRef}
+          src={absoluteUrl(`/api/media/${skill.video_id}`)}
+          controls
+          playsInline
+          preload="metadata"
+          className="w-full rounded-lg border"
+          style={{ borderColor: "var(--fs-border)" }}
+          data-testid="skill-en-video"
+        />
+      ) : null}
       <section>
         <h2 className="text-xs uppercase tracking-wide font-ui mb-2" style={{ color: "var(--fs-muted)" }}>
           Steps ({skill.steps.length})
@@ -153,18 +188,54 @@ function EnglishView({ skill }) {
           {skill.steps.map((s) => (
             <li key={s.n} className="fs-card p-3 flex gap-3" data-testid={`skill-en-step-${s.n}`}>
               {s.frame_id ? (
-                <img
-                  src={absoluteUrl(`/api/media/${s.frame_id}`)}
-                  alt={`Step ${s.n}`}
-                  data-testid={`skill-en-frame-${s.n}`}
-                  className="w-28 h-20 object-cover rounded-md"
-                />
+                <button
+                  type="button"
+                  onClick={() => playFrom(s.start)}
+                  disabled={!skill.video_id}
+                  data-testid={`skill-en-step-play-${s.n}`}
+                  aria-label={`Play step ${s.n} from ${Number(s.start || 0).toFixed(0)} seconds`}
+                  className="shrink-0 relative"
+                  style={{
+                    cursor: skill.video_id ? "pointer" : "default",
+                    opacity: skill.video_id ? 1 : 0.65,
+                  }}
+                >
+                  <img
+                    src={absoluteUrl(`/api/media/${s.frame_id}`)}
+                    alt={`Step ${s.n}`}
+                    data-testid={`skill-en-frame-${s.n}`}
+                    className="w-28 h-20 object-cover rounded-md"
+                  />
+                  {skill.video_id ? (
+                    <span
+                      aria-hidden="true"
+                      className="absolute inset-0 flex items-center justify-center rounded-md"
+                      style={{
+                        background: "rgba(0,0,0,0.25)",
+                        color: "#fff",
+                        fontSize: "1.6rem",
+                        lineHeight: 1,
+                      }}
+                    >
+                      ▶
+                    </span>
+                  ) : null}
+                </button>
               ) : (
-                <div className="w-28 h-20 rounded-md" style={{ background: "var(--fs-accent)" }} />
+                <div className="w-28 h-20 rounded-md shrink-0" style={{ background: "var(--fs-accent)" }} />
               )}
               <div className="min-w-0">
                 <p className="font-semibold">{s.n}. {s.title}</p>
                 <p className="text-sm font-ui" style={{ color: "var(--fs-muted)" }}>{s.instruction}</p>
+                {skill.video_id && (s.start != null || s.end != null) ? (
+                  <p
+                    className="text-xs font-ui mt-1"
+                    style={{ color: "var(--fs-muted)" }}
+                    data-testid={`skill-en-step-range-${s.n}`}
+                  >
+                    {Number(s.start || 0).toFixed(0)}s – {Number(s.end || 0).toFixed(0)}s
+                  </p>
+                ) : null}
               </div>
             </li>
           ))}
@@ -211,7 +282,7 @@ function EnglishView({ skill }) {
                       fontWeight: q.answer_index === i ? 600 : 400,
                     }}
                   >
-                    {String.fromCharCode(65 + i)}. {o}{q.answer_index === i ? " ✓" : ""}
+                    {`${i + 1}. ${o}`}{q.answer_index === i ? " ✓" : ""}
                   </li>
                 ))}
               </ol>
@@ -472,7 +543,7 @@ function TranslationView({ skill, lang, onEdited, onReview, onRetry, retrying })
                         style={{ borderColor: "var(--fs-border)" }}
                       />
                     ) : (
-                      <span>{String.fromCharCode(65 + j)}. {o}</span>
+                      <span>{`${j + 1}. ${o}`}</span>
                     )}
                   </li>
                 ))}

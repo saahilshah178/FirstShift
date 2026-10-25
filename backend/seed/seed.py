@@ -60,19 +60,18 @@ def _frame_png(skill_title: str, step_n: int, color: tuple[int, int, int]) -> by
 def _tiny_clip() -> tuple[bytes, str]:
     """Return (bytes, content_type) for a placeholder clip stored in GridFS.
 
-    We don't actually have a video encoder available — a tiny WAV passes
-    our allowlist and is small enough for a seed stand-in.
+    Uses a pre-generated 2 s, 320x240, H.264 + AAC mp4 shipped as a seed
+    asset. Chrome / Safari / mobile browsers all play it. The file is ~3 KB.
     """
-    # 0.2s of silence at 8 kHz mono, 8-bit → ~1.6 KB WAV.
-    import wave
+    from pathlib import Path
 
-    buf = io.BytesIO()
-    with wave.open(buf, "wb") as w:
-        w.setnchannels(1)
-        w.setsampwidth(1)
-        w.setframerate(8000)
-        w.writeframes(b"\x80" * 1600)
-    return buf.getvalue(), "audio/wav"
+    asset = Path(__file__).resolve().parent / "assets" / "placeholder.mp4"
+    if not asset.exists():
+        raise RuntimeError(
+            f"seed placeholder clip missing at {asset}; run "
+            "`backend/seed/assets/generate_placeholder.sh` to produce it."
+        )
+    return asset.read_bytes(), "video/mp4"
 
 
 def _oid() -> str:
@@ -378,7 +377,7 @@ async def seed() -> dict:
         caregiver = caregivers[plan["caregiver"]]
         skill = skills[plan["skill"]]
         clip_uuid = await store.save(
-            clip_bytes, clip_mime, filename=f"attempt-{i}.wav"
+            clip_bytes, clip_mime, filename=f"attempt-{i}.mp4"
         )
         checks = []
         for ci, chk in enumerate(skill["checks"]):

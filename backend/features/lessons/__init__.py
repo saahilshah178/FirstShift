@@ -28,7 +28,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
 from db import get_db
 
@@ -48,9 +48,10 @@ async def placeholder() -> dict:
 
 
 @router.get("/skills")
-async def list_skills():
+async def list_skills(include_archived: bool = Query(False)):
     db = get_db()
-    skills = await db.skills.find({}).to_list(length=100)
+    query: dict = {} if include_archived else {"archived": {"$ne": True}}
+    skills = await db.skills.find(query).to_list(length=200)
     return {
         "skills": [
             {
@@ -58,6 +59,7 @@ async def list_skills():
                 "title": s.get("title"),
                 "step_count": len(s.get("steps", [])),
                 "check_count": len(s.get("checks", [])),
+                "archived": bool(s.get("archived", False)),
             }
             for s in skills
         ]
@@ -70,8 +72,21 @@ async def caregiver_lessons(caregiver_id: str):
     caregiver = await db.caregivers.find_one({"_id": caregiver_id})
     if not caregiver:
         raise HTTPException(status_code=404, detail="caregiver not found")
-    all_skills = await db.skills.find({}).to_list(length=100)
+    all_skills = await db.skills.find({"archived": {"$ne": True}}).to_list(length=200)
     cleared = set(caregiver.get("cleared_skills") or [])
+    # Fix #20 — surface which "remaining" skills already have an attempt in
+    # flight so the caregiver UI can swap the "to do" chip for "awaiting
+    # sign-off" once they've been through all steps + quiz + recording.
+    SIGNABLE = ("ready_to_sign", "needs_practice")
+    attempts = await db.attempts.find(
+        {"caregiver_id": caregiver_id, "status": {"$in": list(SIGNABLE)}},
+    ).to_list(length=500)
+    # Only count attempts that are NOT yet signed off (reviewed).
+    attempted = {
+        a["skill_id"]
+        for a in attempts
+        if a.get("skill_id") and not a.get("reviewed")
+    }
     return {
         "caregiver": {"id": caregiver["_id"], "name": caregiver.get("name")},
         "cleared": [
@@ -80,7 +95,12 @@ async def caregiver_lessons(caregiver_id: str):
             if s["_id"] in cleared
         ],
         "remaining": [
-            {"id": s["_id"], "title": s["title"], "step_count": len(s.get("steps", []))}
+            {
+                "id": s["_id"],
+                "title": s["title"],
+                "step_count": len(s.get("steps", [])),
+                "has_pending_attempt": s["_id"] in attempted,
+            }
             for s in all_skills
             if s["_id"] not in cleared
         ],

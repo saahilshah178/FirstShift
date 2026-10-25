@@ -135,11 +135,11 @@ export default function PracticePage() {
                   type="button"
                   onClick={() => setSelected(s)}
                   data-testid={`practice-pick-${s.id}`}
-                  className="w-full tap text-left px-4 py-3 flex items-center justify-between"
+                  className="w-full tap text-left px-4 py-4 flex items-center justify-between gap-4"
                 >
-                  <span className="font-semibold">{s.title}</span>
+                  <span className="font-semibold leading-snug">{s.title}</span>
                   <span
-                    className="font-ui text-xs"
+                    className="font-ui text-xs whitespace-nowrap"
                     style={{ color: "var(--fs-muted)" }}
                   >
                     {s.step_count} steps

@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "@/api";
+import { useRole, canAnswerQuestions } from "@/hooks/useRole";
 
 export default function QuestionsPage() {
   const [inbox, setInbox] = useState({ waiting: [], answered: [] });
@@ -22,7 +23,11 @@ export default function QuestionsPage() {
     load();
   }, [load]);
   useEffect(() => {
-    const t = setInterval(() => load(), 3000);
+    // Owner inbox doesn't need second-level freshness — switch to 10s so
+    // we aren't hammering the backend when the Care Manager tab is left
+    // open all day. Picking a row still shows an immediate detail (no
+    // extra fetch) and we re-poll on the schedule below.
+    const t = setInterval(() => load(), 10000);
     return () => clearInterval(t);
   }, [load]);
 
@@ -43,7 +48,7 @@ export default function QuestionsPage() {
         </p>
       ) : null}
 
-      <div className="grid gap-5 md:grid-cols-[22rem_1fr]">
+      <div className="grid gap-5 md:grid-cols-[22rem_minmax(0,1fr)]">
         <aside data-testid="questions-list" className="space-y-4">
           <Column
             title={`Waiting (${inbox.waiting.length})`}
@@ -119,7 +124,15 @@ function Column({ title, rows, activeId, onPick, tone }) {
   );
 }
 
+function sourceLabel(src) {
+  if (src === "owner") return "Care Manager";
+  if (src === "gemini") return "AI";
+  return src || "unknown";
+}
+
 function Detail({ question, onDone }) {
+  const role = useRole();
+  const canAnswer = canAnswerQuestions(role);
   const [answer, setAnswer] = useState("");
   const [recState, setRecState] = useState("idle"); // idle | recording | transcribing | ready
   const [recErr, setRecErr] = useState(null);
@@ -197,7 +210,7 @@ function Detail({ question, onDone }) {
 
   return (
     <article
-      className="fs-card p-5 space-y-4"
+      className="fs-card p-5 space-y-4 min-w-0 break-words"
       data-testid={`question-detail-${question.id}`}
     >
       <header>
@@ -205,7 +218,7 @@ function Detail({ question, onDone }) {
           {question.caregiver?.name} · {question.language} ·{" "}
           {new Date(question.created_at).toLocaleString()}
         </p>
-        <p className="text-base mt-1 font-semibold" data-testid="question-detail-text">
+        <p className="text-base mt-1 font-semibold break-words" data-testid="question-detail-text">
           {question.text}
         </p>
       </header>
@@ -220,9 +233,25 @@ function Detail({ question, onDone }) {
             className="text-xs uppercase font-ui tracking-wide mb-1"
             style={{ color: "var(--fs-pass)" }}
           >
-            Answered ({question.source})
+            Answered by {sourceLabel(question.source)}
           </p>
           <p className="text-sm whitespace-pre-wrap">{question.answer}</p>
+        </section>
+      ) : !canAnswer ? (
+        <section
+          className="rounded-lg p-3"
+          style={{ background: "var(--fs-accent)" }}
+          data-testid="question-detail-role-gate"
+        >
+          <p
+            className="text-xs uppercase font-ui tracking-wide mb-1"
+            style={{ color: "var(--fs-warn)" }}
+          >
+            Read only
+          </p>
+          <p className="text-sm">
+            Switch to Care Manager to answer this question.
+          </p>
         </section>
       ) : (
         <>

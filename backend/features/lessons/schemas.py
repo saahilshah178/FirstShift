@@ -10,8 +10,8 @@ from typing import Any
 LANE_B_PROMPT = (
     "Use only what the nurse shows or says. Each instruction is under 20 "
     "words, in plain language. Checks must be visible on camera, in order, "
-    "ids c1..cN. The quiz is exactly 2 multiple-choice questions with 3 "
-    "options each; answer is the index."
+    "ids c1..cN. The quiz is a short set of 1 to 3 multiple-choice questions, "
+    "each with 3 options; answer is the index."
 )
 
 
@@ -226,6 +226,12 @@ def validate_analyze(
             break
 
     # ---- Checks ----
+    # Preserve existing check IDs (TWEAK-B / Batch-2 tightening): a skill
+    # may legitimately use a non-`c{N}` prefix (seeded Glove removal is
+    # `g1..g7` and attempt records already reference those ids — renaming
+    # would orphan them). The validator still prefers `c{N}` for new,
+    # pipeline-authored skills; it only flags a non-standard id as an
+    # informational problem on the editor path.
     raw_checks = payload.get("checks") or []
     checks_out: list[dict] = []
     if not isinstance(raw_checks, list) or not raw_checks:
@@ -236,27 +242,39 @@ def validate_analyze(
             continue
         want_id = f"c{i+1}"
         got_id = raw.get("id")
-        if got_id != want_id:
+        if isinstance(got_id, str) and got_id.strip():
+            final_id = got_id.strip()
+            if final_id != want_id:
+                problems.append({
+                    "where": f"checks[{i}].id",
+                    "message": f"Non-standard id {final_id!r} preserved (new skills prefer {want_id!r}).",
+                    "blocking": False,
+                })
+        else:
             problems.append({
                 "where": f"checks[{i}].id",
-                "message": f"Expected id={want_id!r}, got {got_id!r}; renamed.",
+                "message": f"Missing id; assigned {want_id!r}.",
                 "blocking": False,
             })
+            final_id = want_id
         checks_out.append({
-            "id": want_id,
+            "id": final_id,
             "description": str(raw.get("description") or "").strip() or "(no description)",
             "safety_critical": bool(raw.get("safety_critical", False)),
         })
 
     # ---- Quiz ----
+    # Fix #10 — quiz count is unconstrained; 0..N allowed. Still enforce
+    # 3 choices and a valid answer index per question that IS present.
     raw_quiz = payload.get("quiz") or []
     quiz_out: list[dict] = []
-    if not isinstance(raw_quiz, list) or len(raw_quiz) != 2:
+    if raw_quiz and not isinstance(raw_quiz, list):
         problems.append({
             "where": "quiz",
-            "message": f"Expected 2 quiz questions, got {len(raw_quiz) if isinstance(raw_quiz, list) else 0}.",
+            "message": "Quiz must be a list.",
             "blocking": True,
         })
+        raw_quiz = []
     for i, raw in enumerate(raw_quiz or []):
         if not isinstance(raw, dict):
             problems.append({"where": f"quiz[{i}]", "message": "Quiz item is not an object.", "blocking": True})

@@ -29,6 +29,11 @@ _WAITING_OWNER_FALLBACK = {
     "tl": "Tinanong ko ang iyong care manager at ipapadala ko dito ang kanyang sagot kapag handa na.",
 }
 
+# Copy pass (Batch-4 #22/#23): Spanish must use `tú` throughout and
+# refer to the role in the singular ("administradora de cuidados").
+# `_WAITING_OWNER_FALLBACK["es"]` above already does; keep this list
+# as the authoritative source whenever we add new fallbacks.
+
 _ANSWER_SCHEMA = {
     "type": "object",
     "properties": {

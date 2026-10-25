@@ -9,12 +9,12 @@
 from __future__ import annotations
 
 import logging
-import uuid
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 from db import get_db
+from roles import Role, require_role
 
 from .pipeline import utcnow_iso
 from .translate import translate_language
@@ -22,6 +22,12 @@ from .translate import translate_language
 logger = logging.getLogger("firstshift.lessons.skills_routes")
 
 router = APIRouter()
+
+# Role gates:
+# - archive / unarchive: Care Manager only (destructive on the skill list).
+# - edit / translation writes: Care Manager + Trainer.
+_ARCHIVE_ROLE = require_role({Role.CARE_MANAGER})
+_EDIT_ROLE = require_role({Role.CARE_MANAGER, Role.TRAINER})
 
 
 def _normalise_lang(lang: str) -> str:
@@ -44,6 +50,7 @@ async def get_skill(skill_id: str) -> dict:
         "version": int(doc.get("version") or 1),
         "source_credit": doc.get("source_credit") or "",
         "video_id": doc.get("video_id"),
+        "archived": bool(doc.get("archived", False)),
         "steps": doc.get("steps") or [],
         "checks": doc.get("checks") or [],
         "quiz": doc.get("quiz") or [],
@@ -67,16 +74,64 @@ def _normalise_translation(t: Any) -> dict:
     }
 
 
-@router.post("/skills/{skill_id}/edit")
-async def open_edit_job(skill_id: str) -> dict:
-    """Copy a published skill into a new draft job (no re-analysis)."""
+@router.delete("/skills/{skill_id}")
+async def archive_skill(skill_id: str, _role: str = Depends(_ARCHIVE_ROLE)) -> dict:
+    """Soft-delete: sets `archived: true` on the skill row.
+
+    GET /skills excludes archived by default; GET /skills?include_archived=true
+    returns them. No cascade — attempts/signoffs/cleared_skills references stay.
+    """
     db = get_db()
-    skill = await db.skills.find_one({"_id": skill_id})
+    result = await db.skills.update_one(
+        {"_id": skill_id},
+        {"$set": {"archived": True, "archived_at": utcnow_iso()}},
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="skill not found")
+    return {"ok": True, "skill_id": skill_id, "archived": True}
+
+
+@router.post("/skills/{skill_id}/unarchive")
+async def unarchive_skill(skill_id: str, _role: str = Depends(_ARCHIVE_ROLE)) -> dict:
+    """Reverse of the archive op (future UI surface)."""
+    db = get_db()
+    result = await db.skills.update_one(
+        {"_id": skill_id},
+        {"$set": {"archived": False}, "$unset": {"archived_at": ""}},
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="skill not found")
+    return {"ok": True, "skill_id": skill_id, "archived": False}
+
+
+@router.post("/skills/{skill_id}/edit")
+async def open_edit_job(skill_id: str, _role: str = Depends(_EDIT_ROLE)) -> dict:
+    """Lazy edit (Fix #13): return a deterministic `edit-{skill_id}` job_id
+    WITHOUT inserting a `lesson_jobs` row. The first `PUT /jobs/{job_id}/draft`
+    materialises the row (see `jobs.py::save_draft`). This stops the "I clicked
+    Edit three times" drafts drawer from accumulating junk.
+
+    404 if the skill does not exist. Idempotent across repeated clicks and
+    across users (same skill_id → same job_id → same resumable editor).
+    """
+    db = get_db()
+    skill = await db.skills.find_one({"_id": skill_id}, {"_id": 1})
     if not skill:
         raise HTTPException(status_code=404, detail="skill not found")
+    return {"job_id": f"edit-{skill_id}"}
 
-    job_id = uuid.uuid4().hex
-    draft = {
+
+def _max_end_time(draft: dict) -> float:
+    out = 0.0
+    for s in draft.get("steps") or []:
+        out = max(out, float(s.get("end") or 0.0))
+    return round(out, 2)
+
+
+def _synth_edit_draft(skill: dict) -> dict:
+    """Shape a published skill into the lesson_jobs.draft shape so the editor
+    can render it even before any row exists in the DB."""
+    return {
         "title": skill.get("title") or "",
         "steps": [
             {
@@ -107,35 +162,15 @@ async def open_edit_job(skill_id: str) -> dict:
             for q in (skill.get("quiz") or [])
         ],
     }
-    duration_s = _max_end_time(draft)
-    doc = {
-        "_id": job_id,
-        "status": "ready",
-        "error": "",
-        "video_id": skill.get("video_id"),
-        "source_credit": skill.get("source_credit") or "",
-        "skill_id": skill_id,  # link so publish updates (version+1)
-        "duration_s": duration_s,
-        "draft": draft,
-        "problems": [],
-        "draft_rev": 0,
-        "heartbeat_at": utcnow_iso(),
-        "created_at": utcnow_iso(),
-        "updated_at": utcnow_iso(),
-    }
-    await db.lesson_jobs.insert_one(doc)
-    return {"job_id": job_id}
-
-
-def _max_end_time(draft: dict) -> float:
-    out = 0.0
-    for s in draft.get("steps") or []:
-        out = max(out, float(s.get("end") or 0.0))
-    return round(out, 2)
 
 
 @router.put("/skills/{skill_id}/translations/{lang}")
-async def save_translation(skill_id: str, lang: str, body: dict) -> dict:
+async def save_translation(
+    skill_id: str,
+    lang: str,
+    body: dict,
+    _role: str = Depends(_EDIT_ROLE),
+) -> dict:
     """Save manager-edited translation text; status preserved (per spec)."""
     lang = _normalise_lang(lang)
     db = get_db()
@@ -208,7 +243,11 @@ def _apply_edited_translation(skill: dict, current: dict, body: dict) -> dict:
 
 
 @router.post("/skills/{skill_id}/translations/{lang}/review")
-async def review_translation(skill_id: str, lang: str) -> dict:
+async def review_translation(
+    skill_id: str,
+    lang: str,
+    _role: str = Depends(_EDIT_ROLE),
+) -> dict:
     lang = _normalise_lang(lang)
     db = get_db()
     skill = await db.skills.find_one({"_id": skill_id})
@@ -223,7 +262,7 @@ async def review_translation(skill_id: str, lang: str) -> dict:
 
 
 @router.post("/skills/{skill_id}/translations/retry")
-async def retry_translations(skill_id: str) -> dict:
+async def retry_translations(skill_id: str, _role: str = Depends(_EDIT_ROLE)) -> dict:
     """Re-run the translate pipeline for es+tl."""
     db = get_db()
     skill = await db.skills.find_one({"_id": skill_id})
