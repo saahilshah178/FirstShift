@@ -1,37 +1,60 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "@/api";
-import { useRole, canAnswerQuestions } from "@/hooks/useRole";
+import { useCaps } from "@/hooks/useRole";
 
 export default function QuestionsPage() {
   const [inbox, setInbox] = useState({ waiting: [], answered: [] });
   const [err, setErr] = useState(null);
   const [activeId, setActiveId] = useState(null);
+  const detailRef = useRef(null);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (signal) => {
     try {
-      const r = await api.get("/questions/inbox");
+      const r = await api.get("/questions/inbox", { signal });
       setInbox({
         waiting: r.data.waiting || [],
         answered: r.data.answered || [],
       });
     } catch (e) {
+      if (
+        e?.name === "CanceledError" ||
+        e?.name === "AbortError" ||
+        e?.code === "ERR_CANCELED"
+      ) {
+        return;
+      }
       setErr(e?.message || "failed");
     }
   }, []);
 
   useEffect(() => {
-    load();
+    // Stage 4-G: abort guard silences the StrictMode double-mount dev
+    // dup. Production hits the endpoint once.
+    const ac = new AbortController();
+    load(ac.signal);
+    return () => ac.abort();
   }, [load]);
   useEffect(() => {
-    // Owner inbox doesn't need second-level freshness — switch to 10s so
-    // we aren't hammering the backend when the Care Manager tab is left
-    // open all day. Picking a row still shows an immediate detail (no
-    // extra fetch) and we re-poll on the schedule below.
+    // Stage 4-G: polling trimmed to 10s. The Care Manager inbox doesn't
+    // need second-level freshness — new questions still appear within
+    // one polling window and manual nav still forces a fresh fetch.
     const t = setInterval(() => load(), 10000);
     return () => clearInterval(t);
   }, [load]);
 
   const active = [...inbox.waiting, ...inbox.answered].find((q) => q.id === activeId) || null;
+
+  const onPick = useCallback((id) => {
+    setActiveId(id);
+    // Scroll the detail into view on the first tap at the ~480px
+    // column — the panel is stacked BELOW the list so taps on rows
+    // further down the inbox would otherwise feel like no-ops.
+    requestAnimationFrame(() => {
+      if (detailRef.current) {
+        detailRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+    });
+  }, []);
 
   return (
     <section data-testid="questions-page" className="space-y-5">
@@ -48,20 +71,23 @@ export default function QuestionsPage() {
         </p>
       ) : null}
 
-      <div className="grid gap-5 md:grid-cols-[22rem_minmax(0,1fr)]">
+      {/* Stage 4-A: layout always stacks at the agency column
+          (~480px). The answer panel renders BELOW the list, never
+          beside it — single column of thought at this width. */}
+      <div className="space-y-5">
         <aside data-testid="questions-list" className="space-y-4">
           <Column
             title={`Waiting (${inbox.waiting.length})`}
             rows={inbox.waiting}
             activeId={activeId}
-            onPick={setActiveId}
+            onPick={onPick}
             tone="warn"
           />
           <Column
             title={`Answered (${inbox.answered.length})`}
             rows={inbox.answered}
             activeId={activeId}
-            onPick={setActiveId}
+            onPick={onPick}
             tone="pass"
           />
           {inbox.waiting.length + inbox.answered.length === 0 ? (
@@ -74,15 +100,21 @@ export default function QuestionsPage() {
             </p>
           ) : null}
         </aside>
-        <main data-testid="questions-detail">
+        <main data-testid="questions-detail" ref={detailRef}>
           {active ? (
-            <Detail question={active} onDone={() => { setActiveId(null); load(); }} />
+            <Detail
+              question={active}
+              onDone={() => {
+                setActiveId(null);
+                load();
+              }}
+            />
           ) : (
             <p
               className="fs-card px-4 py-6 text-sm"
               style={{ color: "var(--fs-muted)" }}
             >
-              Pick a question on the left to answer it.
+              Tap a question above to open it.
             </p>
           )}
         </main>
@@ -104,19 +136,30 @@ function Column({ title, rows, activeId, onPick, tone }) {
       </h3>
       <ul className="fs-card fs-divider">
         {rows.map((q) => (
-          <li
-            key={q.id}
-            onClick={() => onPick(q.id)}
-            data-testid={`questions-row-${q.id}`}
-            className="px-4 py-3 cursor-pointer"
-            style={{
-              background: activeId === q.id ? "var(--fs-accent)" : "transparent",
-            }}
-          >
-            <p className="text-sm font-semibold truncate">{q.text}</p>
-            <p className="text-xs font-ui" style={{ color: "var(--fs-muted)" }}>
-              {q.caregiver?.name || "unknown"} · {q.language}
-            </p>
+          <li key={q.id}>
+            {/* Stage 4-C: full-row click target. The <button> is
+                full-width + text-left so the entire row is tappable,
+                not just the title. Keyboard navigable because it's a
+                button, not a <li onClick>. */}
+            <button
+              type="button"
+              onClick={() => onPick(q.id)}
+              data-testid={`questions-row-${q.id}`}
+              aria-pressed={activeId === q.id}
+              className="w-full text-left px-4 py-3 tap"
+              style={{
+                background:
+                  activeId === q.id ? "var(--fs-accent)" : "transparent",
+              }}
+            >
+              <p className="text-sm font-semibold break-words">{q.text}</p>
+              <p
+                className="text-xs font-ui mt-0.5"
+                style={{ color: "var(--fs-muted)" }}
+              >
+                {q.caregiver?.name || "unknown"} · {q.language}
+              </p>
+            </button>
           </li>
         ))}
       </ul>
@@ -131,8 +174,8 @@ function sourceLabel(src) {
 }
 
 function Detail({ question, onDone }) {
-  const role = useRole();
-  const canAnswer = canAnswerQuestions(role);
+  const { can } = useCaps();
+  const canAnswer = can.answerQuestions;
   const [answer, setAnswer] = useState("");
   const [recState, setRecState] = useState("idle"); // idle | recording | transcribing | ready
   const [recErr, setRecErr] = useState(null);
@@ -235,24 +278,13 @@ function Detail({ question, onDone }) {
           >
             Answered by {sourceLabel(question.source)}
           </p>
-          <p className="text-sm whitespace-pre-wrap">{question.answer}</p>
+          <p className="text-sm whitespace-pre-wrap break-words">{question.answer}</p>
         </section>
       ) : !canAnswer ? (
-        <section
-          className="rounded-lg p-3"
-          style={{ background: "var(--fs-accent)" }}
-          data-testid="question-detail-role-gate"
-        >
-          <p
-            className="text-xs uppercase font-ui tracking-wide mb-1"
-            style={{ color: "var(--fs-warn)" }}
-          >
-            Read only
-          </p>
-          <p className="text-sm">
-            Switch to Care Manager to answer this question.
-          </p>
-        </section>
+        // Stage 4-D: Scheduler/Trainer on an unanswered question see
+        // the question text itself (already rendered above). No "Switch
+        // to Care Manager" nag — the role switch is in the top bar.
+        null
       ) : (
         <>
           <section className="space-y-2">
@@ -276,7 +308,7 @@ function Detail({ question, onDone }) {
                 }}
               />
             </label>
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3 flex-wrap">
               {recState === "recording" ? (
                 <button
                   type="button"

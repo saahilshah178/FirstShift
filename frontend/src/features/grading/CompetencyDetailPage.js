@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { api, absoluteUrl } from "@/api";
-import { useRole, CARE_MANAGER } from "@/hooks/useRole";
+import { useCaps } from "@/hooks/useRole";
 
 function fmtDate(iso) {
   if (!iso) return "—";
@@ -45,8 +45,8 @@ const PLAN_STATUS_LABEL = {
 
 export default function CompetencyDetailPage() {
   const { caregiverId } = useParams();
-  const role = useRole();
-  const canNearMiss = role === CARE_MANAGER;
+  const { can } = useCaps();
+  const canNearMiss = can.nearMiss;
   const [data, setData] = useState(null);
   const [err, setErr] = useState(null);
   const [expanded, setExpanded] = useState({});

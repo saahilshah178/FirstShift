@@ -1,5 +1,181 @@
 # FirstShift — Changelog
 
+## Stage 4: Agency UI polish (2026-02-26)
+
+Ships items A–H of the Stage 4 brief. All pages verified at a 480 px
+viewport (`document.documentElement.scrollWidth === window.innerWidth`
+on every agency route). No backend changes.
+
+### Items
+
+- **A. Questions page stacks at 480 px.** Removed the
+  `md:grid-cols-[22rem_minmax(0,1fr)]` row layout; answer panel always
+  renders BELOW the list. Replaced the `<li onClick>` with a proper
+  `<button>` so the whole row is a first-click target (and
+  keyboard-navigable). After `onPick`, the detail panel scrolls into
+  view so taps on rows below the fold feel instant.
+
+- **B. Long titles wrap inside their cards.** Dropped `truncate` and
+  added `break-words` + `flex-1 min-w-0` on the title column in
+  `SkillsPage` (published + jobs lists), `SignoffPage` rows,
+  `NewHiresPage` rows, `CompetencyPage` rows, and the h1 on
+  `SkillDetailPage`. Right-side meta (step/check counts, dates, chips,
+  action buttons) wears `shrink-0 whitespace-nowrap` so it never
+  pushes the title off-canvas.
+
+- **C. Full-row click targets.** Converted the Questions list rows
+  from `<li onClick>` to `<button>`, Competency rows from text-only
+  Link to full-row Link, Jobs list to full-row Link, New Hires list to
+  full-row Link to the caregiver's competency file. Audited every
+  agency list; see "Audit" below.
+
+- **D. Role gating via `useCaps()` hook.** New `useCaps()` in
+  `src/hooks/useRole.js` returns `{role, can: {editSkills, signOff,
+  nearMiss, archive, replaceSource, recordSkill, answerQuestions,
+  publish, addQuestion}}`. Replaced scattered `canSignoff(role)`,
+  `canArchiveSkill(role)`, `canEditSkill(role)`, `canRecordSkill(role)`,
+  `canAnswerQuestions(role)` call-sites across SkillDetailPage,
+  SkillsPage, DraftEditorPage, RecordPage, SignoffDetailPage,
+  QuestionsPage, CompetencyDetailPage. Legacy predicates still exported
+  for compatibility; prefer the hook in new code. Removed the "Switch
+  to Care Manager" nags on view-only pages: Skills (removed the
+  Scheduler-view banner), Signoff detail (now shows a quiet "Read
+  only" chip instead), Questions detail (hides the answer form
+  entirely with no message), Draft editor + Record gate (reworded to
+  "Read only" without role-specific instructions).
+
+- **E. Caregivers modal accessibility.** `AgencyShell` now captures
+  the opener element on open and restores focus on close via
+  `requestAnimationFrame`. Close button's `aria-label` reduced from
+  `"Close caregiver picker"` to `"Close"` per spec. Escape key already
+  closed; still does.
+
+- **F. Caregiver 404 copy.** `CaregiverLayout` 404 now reads **"Code
+  not found. Please check your link or contact your coordinator."**
+  No "Back to agency" button (was never present; comment kept
+  explaining why).
+
+- **G. Fetch dedupe + polling.** Added AbortController-based cleanup
+  to `useEffect` fetches in TodayPage, SkillsPage, SignoffPage,
+  ClientsPage (including the per-client caregiver-fit parallel
+  fetches), NewHiresPage, QuestionsPage, CompetencyPage. Confirmed via
+  Playwright request-logger: every mount makes exactly 1 request per
+  endpoint (dev StrictMode double-mount is now silenced). Questions
+  polling kept at 10 s (was already there). TodayPage: no interval
+  poll — refreshes on window `focus` + document `visibilitychange`
+  (visible). Other polls kept where they're status-driven:
+  SkillsPage polls 2 s **only while a job is non-terminal**; chat +
+  draft editor + practice result are 2 s during active FSM /
+  processing. All of those exit when the state goes terminal.
+
+- **H. 480 px overflow sweep — all pass.** See DONE-WHEN table below.
+
+### Role matrix (frontend hide table) — matches `useCaps()`
+
+| Capability           | Care Manager | Trainer | Scheduler |
+|----------------------|:------------:|:-------:|:---------:|
+| Record a skill       | ✓            | ✓       | hidden    |
+| Edit a skill / draft | ✓            | ✓       | hidden    |
+| Publish              | ✓            | ✓       | hidden    |
+| Replace source video | ✓            | hidden  | hidden    |
+| Archive a skill      | ✓            | hidden  | hidden    |
+| Sign off an attempt  | ✓            | hidden  | hidden    |
+| Report near-miss     | ✓            | hidden  | hidden    |
+| Answer a question    | ✓            | hidden  | hidden    |
+
+### Audit — every agency list
+
+| List                                     | Full-row click? | Notes |
+|------------------------------------------|:---------------:|-------|
+| Today cards                              | ✓               | `<Link>` wrapping each `fs-card`; already shipped. |
+| Clients list (`clients-row-*`)           | — intentional   | Each client card does NOT navigate — there is no "client detail" page. Caregiver names inside the fit sections ARE `<Link>` rows (full width). |
+| Skills published (`skills-row-*`)        | ✓               | Converted. |
+| Skills drafts/in-progress (`job-row-*`)  | ✓               | Converted. |
+| Sign-off rows (`signoff-row-*`)          | ✓               | Already shipped. |
+| Questions rows (`questions-row-*`)       | ✓               | Converted from `<li onClick>` to `<button>`. |
+| New Hires rows (`newhires-row-*`)        | ✓               | Converted; links to the caregiver's competency file. |
+| Competency groups (`competency-link-*`)  | ✓               | Converted. |
+| Caregivers picker modal rows             | ✓               | Already a full `<button>`. |
+| Caregiver lessons rows                   | ✓               | Already shipped. |
+
+### Files changed
+
+- `frontend/src/hooks/useRole.js` — new `useCaps()` capability object.
+- `frontend/src/features/ops/TodayPage.js` — on-focus refresh, abort
+  cleanup, three-card layout tightened for 480 px.
+- `frontend/src/features/ops/ClientsPage.js` — abort cleanup.
+- `frontend/src/features/ops/NewHiresPage.js` — full-row Link,
+  break-words, abort cleanup.
+- `frontend/src/features/lessons/SkillsPage.js` — `useCaps`, title
+  wrap, removed role nag, abort cleanup, jobs list full-row Link.
+- `frontend/src/features/lessons/SkillDetailPage.js` — `useCaps`,
+  title wrap, header stacks on narrow widths so three right-aligned
+  buttons don't squeeze the h1 into vertical text.
+- `frontend/src/features/lessons/DraftEditorPage.js` — `useCaps`,
+  gate copy reworded to drop "Switch to Care Manager".
+- `frontend/src/features/lessons/RecordPage.js` — `useCaps`, gate
+  copy reworded.
+- `frontend/src/features/grading/CompetencyPage.js` — full-row Link,
+  break-words, abort cleanup.
+- `frontend/src/features/grading/CompetencyDetailPage.js` — `useCaps`.
+- `frontend/src/features/grading/SignoffPage.js` — row title wrap,
+  abort cleanup.
+- `frontend/src/features/grading/SignoffDetailPage.js` — `useCaps`,
+  dropped "Switch to Care Manager" nag; "Read only" chip instead.
+- `frontend/src/features/questions/QuestionsPage.js` — stacked
+  layout, full-row `<button>`, abort cleanup, polling stayed at 10 s,
+  nag removed.
+- `frontend/src/shell/AgencyShell.js` — opener-ref focus-return on
+  modal close; `aria-label="Close"`.
+- `frontend/src/shell/CaregiverLayout.js` — 404 copy updated.
+
+### DONE-WHEN self-check
+
+| Check | Result |
+|-------|--------|
+| 480 px overflow — `/today`                     | pass (vw=480 doc.sw=480 frame.sw=480 hScroll=false) |
+| 480 px overflow — `/skills`                    | pass (vw=480 doc.sw=480 frame.sw=480 hScroll=false) |
+| 480 px overflow — `/signoff`                   | pass (vw=480 doc.sw=480 frame.sw=480 hScroll=false) |
+| 480 px overflow — `/clients`                   | pass (vw=480 doc.sw=480 frame.sw=480 hScroll=false) |
+| 480 px overflow — `/questions`                 | pass (vw=480 doc.sw=480 frame.sw=480 hScroll=false) |
+| 480 px overflow — `/new-hires`                 | pass (vw=480 doc.sw=480 frame.sw=480 hScroll=false) |
+| 480 px overflow — `/competency`                | pass (vw=480 doc.sw=480 frame.sw=480 hScroll=false) |
+| 480 px overflow — `/competency/<id>`           | pass (vw=480 doc.sw=480 frame.sw=480 hScroll=false) |
+| 480 px overflow — `/skills/<id>`               | pass (vw=480 doc.sw=480 frame.sw=480 hScroll=false; buttons stack beneath title) |
+| Scheduler: no edit/archive/signoff/near-miss/replace-source buttons | pass (Playwright `document.body.innerText` scans confirm all missing) |
+| Scheduler: no "Switch to Care Manager" nag    | pass (text scan returns false on every page) |
+| Trainer: Edit skill visible, Archive/Replace source hidden | pass |
+| Trainer: Approve/Send back hidden              | pass |
+| Trainer: Report near-miss hidden               | pass |
+| Care Manager: all controls present (regression) | pass |
+| Questions: first-click opens detail            | pass (Playwright click → `question-detail-<id>` present) |
+| /c/BOGUS: "Code not found", no "Back to agency" | pass |
+| Caregivers modal: `aria-label="Close"`         | pass |
+| Caregivers modal: Escape closes, focus returns to opener | pass |
+| Fetch dedupe: every page = 1× per endpoint     | pass (TodayPage, SkillsPage, SignoffPage, ClientsPage × 5, NewHiresPage, QuestionsPage, CompetencyPage all 1×) |
+| Questions polling @ 10 s                       | pass (code constant; interval runs every 10 000 ms) |
+
+### Known no-op polls (sanity audit)
+
+- `ChatPage` polls `/channel/messages` every 2 s — caregiver live
+  conversation. Kept.
+- `AskPage` polls `/questions/list` every 3 s — caregiver waiting for
+  an answer. Kept.
+- `SkillsPage` polls `/lessons/jobs` every 2 s only while at least one
+  job is in a non-terminal state. Kept.
+- `DraftEditorPage` polls `/lessons/jobs/<id>` every 2 s only while
+  the job is non-terminal. Kept.
+- `PracticeResultPage` polls once-cycle until the attempt reaches a
+  terminal grade. Kept.
+
+### No CONTRACTS drift
+
+Stage 4 is UI-only; no backend changes; no new endpoints.
+
+---
+
+
+
 ## Stage 3 (partial): Today + Clients + near-miss (2026-02-26)
 
 Ships items **A–I, N, O** of the Stage 3 brief. Items **J–M** (New Hires

@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, absoluteUrl } from "@/api";
-import { useRole, canSignoff } from "@/hooks/useRole";
+import { useCaps } from "@/hooks/useRole";
 
 const RESULT_CHIP = {
   pass: "fs-chip fs-chip-pass",
@@ -22,8 +22,8 @@ export default function SignoffDetailPage() {
   const { attemptId } = useParams();
   const navigate = useNavigate();
   const videoRef = useRef(null);
-  const role = useRole();
-  const canSign = canSignoff(role);
+  const { role, can } = useCaps();
+  const canSign = can.signOff;
   const [attempt, setAttempt] = useState(null);
   const [err, setErr] = useState(null);
   const [signer, setSigner] = useState(
@@ -206,13 +206,19 @@ export default function SignoffDetailPage() {
           </p>
         </div>
       ) : !canSign ? (
+        // Stage 4-D: Scheduler/Trainer see the attempt + checks (full
+        // audit trail) but no sign-off form and NO "Switch to Care
+        // Manager" nag. Server already 403s the write.
         <div
           className="fs-card p-4"
           data-testid="signoff-role-gate"
           style={{ background: "var(--fs-accent)" }}
         >
-          <p className="font-ui text-sm">
-            Switch to Care Manager to approve or send back this attempt.
+          <p
+            className="font-ui text-xs uppercase tracking-wide"
+            style={{ color: "var(--fs-muted)" }}
+          >
+            Read only
           </p>
         </div>
       ) : (

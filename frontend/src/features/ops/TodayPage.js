@@ -8,14 +8,48 @@ export default function TodayPage() {
   const [metrics, setMetrics] = useState({ status: "loading" });
   const [drilldown, setDrilldown] = useState({ open: false, rows: null });
 
-  useEffect(() => {
+  const fetchMetrics = React.useCallback(() => {
+    const ac = new AbortController();
     api
-      .get("/ops/today/metrics")
+      .get("/ops/today/metrics", { signal: ac.signal })
       .then((r) => setMetrics({ status: "ok", data: r.data }))
-      .catch((e) =>
-        setMetrics({ status: "error", error: e?.message || "failed" }),
-      );
+      .catch((e) => {
+        if (
+          e?.name === "CanceledError" ||
+          e?.name === "AbortError" ||
+          e?.code === "ERR_CANCELED"
+        ) {
+          return;
+        }
+        setMetrics({ status: "error", error: e?.message || "failed" });
+      });
+    return ac;
   }, []);
+
+  useEffect(() => {
+    // Stage 4-G: AbortController cleanup silences the StrictMode
+    // double-mount dev-only duplicate; a single request lands in
+    // production. The cleanup also protects stale setStates.
+    const ac = fetchMetrics();
+    return () => ac.abort();
+  }, [fetchMetrics]);
+
+  // Stage 4-G: Today refreshes on tab focus / visibility change, not
+  // on a poll. The headline + card counts don't move second-to-second
+  // but should pick up a fresh signoff when the Care Manager alt-tabs
+  // back to the dashboard.
+  useEffect(() => {
+    const onFocus = () => fetchMetrics();
+    const onVis = () => {
+      if (document.visibilityState === "visible") fetchMetrics();
+    };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVis);
+    };
+  }, [fetchMetrics]);
 
   const openDrilldown = async () => {
     if (drilldown.rows) {
@@ -149,25 +183,25 @@ export default function TodayPage() {
 
 function Card({ to, label, value, hint, testid }) {
   const content = (
-    <>
-      <div className="flex items-baseline justify-between">
-        <h2 className="text-sm font-ui font-semibold uppercase tracking-wide">
+    <div className="flex items-start gap-3">
+      <div className="min-w-0 flex-1">
+        <h2 className="text-xs font-ui font-semibold uppercase tracking-wide">
           {label}
         </h2>
-        <span
-          className="text-3xl font-semibold"
-          data-testid={`${testid}-value`}
+        <p
+          className="text-xs font-ui mt-1 break-words"
+          style={{ color: "var(--fs-muted)" }}
         >
-          {value}
-        </span>
+          {hint}
+        </p>
       </div>
-      <p
-        className="text-xs font-ui mt-1"
-        style={{ color: "var(--fs-muted)" }}
+      <span
+        className="text-3xl font-semibold tabular-nums shrink-0 leading-none mt-0.5"
+        data-testid={`${testid}-value`}
       >
-        {hint}
-      </p>
-    </>
+        {value}
+      </span>
+    </div>
   );
   return (
     <Link

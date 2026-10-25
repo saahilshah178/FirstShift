@@ -1,15 +1,15 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, absoluteUrl } from "@/api";
-import { useRole, canEditSkill, canArchiveSkill } from "@/hooks/useRole";
+import { useCaps } from "@/hooks/useRole";
 
 export default function SkillDetailPage() {
   const { skillId } = useParams();
   const nav = useNavigate();
-  const role = useRole();
-  const canEdit = canEditSkill(role);
-  const canArchive = canArchiveSkill(role);
-  const canReplaceSource = role === "Care Manager";
+  const { can } = useCaps();
+  const canEdit = can.editSkills;
+  const canArchive = can.archive;
+  const canReplaceSource = can.replaceSource;
   const [skill, setSkill] = useState(null);
   const [err, setErr] = useState(null);
   const [lang, setLang] = useState("en");
@@ -92,9 +92,9 @@ export default function SkillDetailPage() {
 
   return (
     <section className="space-y-5" data-testid="skill-detail">
-      <header className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <h1 className="text-2xl font-semibold" data-testid="skill-title">
+      <header className="flex flex-col gap-3">
+        <div className="min-w-0 flex-1">
+          <h1 className="text-2xl font-semibold break-words" data-testid="skill-title">
             {skill.title}
           </h1>
           <p className="text-xs font-ui" style={{ color: "var(--fs-muted)" }}>
@@ -102,7 +102,7 @@ export default function SkillDetailPage() {
             {skill.source_credit ? ` · ${skill.source_credit}` : ""}
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           {canReplaceSource ? (
             <>
               <button

@@ -85,15 +85,13 @@ export default function CaregiverLayout({ nav }) {
         data-testid="caregiver-404"
       >
         <div className="flex-1 flex flex-col items-center justify-center text-center px-8 gap-3">
-          <h1 className="text-2xl font-semibold">We can't find that code</h1>
+          <h1 className="text-2xl font-semibold">Code not found</h1>
           <p style={{ color: "var(--fs-muted)" }}>
-            The link may be wrong, or the caregiver account was removed.
-            Please check with your care manager for the correct link.
+            Please check your link or contact your coordinator.
           </p>
-          {/* "Back to agency" intentionally omitted — caregivers never
-              see the agency app. Agency staff who hit this get here by
-              typing a bad code in the picker; they can use the browser
-              back button or re-open the picker. */}
+          {/* Stage 4-F: no "Back to agency" button — caregivers never
+              see agency surfaces. Agency staff who hit this via a bad
+              code in the picker can use the browser back button. */}
         </div>
       </div>
     );
