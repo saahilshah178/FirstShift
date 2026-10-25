@@ -9,10 +9,13 @@ export default function SkillDetailPage() {
   const role = useRole();
   const canEdit = canEditSkill(role);
   const canArchive = canArchiveSkill(role);
+  const canReplaceSource = role === "Care Manager";
   const [skill, setSkill] = useState(null);
   const [err, setErr] = useState(null);
   const [lang, setLang] = useState("en");
-  const [retrying, setRetrying] = useState(false);
+  const [retrying, setRetrying] = useState(null); // null | "es" | "tl"
+  const [replacing, setReplacing] = useState(false);
+  const replaceInputRef = useRef(null);
 
   const load = useMemo(
     () => async () => {
@@ -49,15 +52,40 @@ export default function SkillDetailPage() {
     }
   };
 
-  const retryTranslations = async () => {
-    setRetrying(true);
+  const retryTranslation = async (langCode) => {
+    setRetrying(langCode);
     try {
-      await api.post(`/lessons/skills/${skillId}/translations/retry`);
+      await api.post(`/lessons/skills/${skillId}/translations/retry?lang=${langCode}`);
       await load();
     } catch (e) {
       setErr(e?.message || "translate failed");
     } finally {
-      setRetrying(false);
+      setRetrying(null);
+    }
+  };
+
+  const onReplaceSourcePick = async (ev) => {
+    const file = ev.target.files && ev.target.files[0];
+    ev.target.value = "";
+    if (!file) return;
+    if (!window.confirm(
+      `Replace the source video for "${skill.title}"? ` +
+      "This re-extracts every step's frame at its current start time. " +
+      "It does NOT bump the version or touch translations."
+    )) return;
+    setReplacing(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      await api.post(`/lessons/skills/${skillId}/replace_source_video`, fd, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+      await load();
+    } catch (e) {
+      const detail = e?.response?.data?.detail;
+      setErr(typeof detail === "string" ? detail : e?.message || "replace failed");
+    } finally {
+      setReplacing(false);
     }
   };
 
@@ -74,6 +102,29 @@ export default function SkillDetailPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          {canReplaceSource ? (
+            <>
+              <button
+                type="button"
+                onClick={() => replaceInputRef.current && replaceInputRef.current.click()}
+                disabled={replacing}
+                data-testid="skill-replace-source-btn"
+                className="tap px-3 text-sm font-ui rounded-full border"
+                style={{ borderColor: "var(--fs-border)" }}
+                title="Upload a new source video — re-extracts every step's frame; does NOT create a draft or bump version."
+              >
+                {replacing ? "Replacing…" : "Replace source video"}
+              </button>
+              <input
+                ref={replaceInputRef}
+                type="file"
+                accept="video/mp4,video/webm,video/quicktime"
+                onChange={onReplaceSourcePick}
+                data-testid="skill-replace-source-input"
+                className="hidden"
+              />
+            </>
+          ) : null}
           {canEdit ? (
             <button
               type="button"
@@ -142,8 +193,8 @@ export default function SkillDetailPage() {
             await api.post(`/lessons/skills/${skillId}/translations/${lang}/review`);
             load();
           }}
-          onRetry={retryTranslations}
-          retrying={retrying}
+          onRetry={() => retryTranslation(lang)}
+          retrying={retrying === lang}
         />
       )}
     </section>
@@ -222,7 +273,20 @@ function EnglishView({ skill }) {
                   ) : null}
                 </button>
               ) : (
-                <div className="w-28 h-20 rounded-md shrink-0" style={{ background: "var(--fs-accent)" }} />
+                <div
+                  className="w-28 h-20 rounded-md shrink-0 flex flex-col items-center justify-center font-ui border border-dashed"
+                  data-testid={`skill-en-no-frame-${s.n}`}
+                  style={{
+                    borderColor: "var(--fs-border)",
+                    background: "transparent",
+                    color: "var(--fs-muted)",
+                  }}
+                >
+                  <span aria-hidden="true" style={{ fontSize: "1.1rem", lineHeight: 1 }}>
+                    🖼
+                  </span>
+                  <span className="text-[10px] mt-1">No image yet</span>
+                </div>
               )}
               <div className="min-w-0">
                 <p className="font-semibold">{s.n}. {s.title}</p>

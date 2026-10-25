@@ -474,9 +474,9 @@ async def publish_job(job_id: str, _role: str = Depends(_JOB_WRITE_ROLE)) -> dic
 def _publish_blockers(doc: dict) -> list[str]:
     """Return human reasons that block publish; empty when it's safe.
 
-    Fix #10 — quiz count is now unconstrained (0..N allowed). Each
-    quiz question that IS present still needs 3 valid choices and a
-    valid answer index (0..2).
+    Stage 1 — quiz count MUST be exactly 2 (editor enforces 2..2 inline;
+    publish 422s with a clear reason if a request lands outside the bound).
+    Each quiz question needs 3 valid choices and a valid answer index (0..2).
     """
     reasons: list[str] = []
     draft = doc.get("draft") or {}
@@ -491,6 +491,8 @@ def _publish_blockers(doc: dict) -> list[str]:
             break
     if not checks:
         reasons.append("At least one check is required.")
+    if len(quiz) != 2:
+        reasons.append(f"Quiz must have exactly 2 questions (got {len(quiz)}).")
     for q in quiz:
         if len(q.get("choices") or []) != 3:
             reasons.append("Each quiz question needs 3 choices.")

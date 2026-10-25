@@ -2,18 +2,30 @@
 
 - `GET  /skills/{id}`                              — full skill doc.
 - `POST /skills/{id}/edit`                         — copy to a new draft job.
+- `POST /skills/{id}/replace_source_video`         — Care-Manager-only; swap the
+  source video on an existing (non-draft) skill and re-extract every step's
+  frame at its current `start_time`. Stage 1 — does NOT create a draft,
+  does NOT change version/publish state.
 - `PUT  /skills/{id}/translations/{es|tl}`         — save edited translation text.
 - `POST /skills/{id}/translations/{es|tl}/review`  — mark as reviewed.
-- `POST /skills/{id}/translations/retry`           — re-run translate pipeline.
+- `POST /skills/{id}/translations/retry`           — re-run translate pipeline
+  for es + tl (default) or just one language when `?lang=es` / `?lang=tl`
+  (Stage 1 — per-language retry so the Stale badge's "Retry" button only
+  touches the affected tab).
 """
 from __future__ import annotations
 
 import logging
+import tempfile
+import uuid
+from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 
 from db import get_db
+from media.encode import EncodeError, encode_mp4, extract_frame
+from media.store import get_media_store
 from roles import Role, require_role
 
 from .pipeline import utcnow_iso
@@ -24,9 +36,10 @@ logger = logging.getLogger("firstshift.lessons.skills_routes")
 router = APIRouter()
 
 # Role gates:
-# - archive / unarchive: Care Manager only (destructive on the skill list).
-# - edit / translation writes: Care Manager + Trainer.
+# - archive / unarchive / replace_source_video: Care Manager only (destructive).
+# - edit / translation writes / translation retry: Care Manager + Trainer.
 _ARCHIVE_ROLE = require_role({Role.CARE_MANAGER})
+_SOURCE_VIDEO_ROLE = require_role({Role.CARE_MANAGER})
 _EDIT_ROLE = require_role({Role.CARE_MANAGER, Role.TRAINER})
 
 
@@ -262,12 +275,25 @@ async def review_translation(
 
 
 @router.post("/skills/{skill_id}/translations/retry")
-async def retry_translations(skill_id: str, _role: str = Depends(_EDIT_ROLE)) -> dict:
-    """Re-run the translate pipeline for es+tl."""
+async def retry_translations(
+    skill_id: str,
+    lang: str | None = Query(default=None, description="es or tl; omit for both"),
+    _role: str = Depends(_EDIT_ROLE),
+) -> dict:
+    """Re-run the translate pipeline for es+tl (default) or a single language.
+
+    Stage 1 — the Stale badge's "Retry translation" button touches only its
+    own tab, so this endpoint accepts `?lang=es` / `?lang=tl` and skips the
+    other language's prior payload untouched. `?lang=` omitted keeps the
+    legacy two-language behaviour used by other callers.
+    """
     db = get_db()
     skill = await db.skills.find_one({"_id": skill_id})
     if not skill:
         raise HTTPException(status_code=404, detail="skill not found")
+
+    if lang is not None and lang not in {"es", "tl"}:
+        raise HTTPException(status_code=404, detail="language not supported")
 
     english_for_lang = {
         "title": skill.get("title") or "",
@@ -276,20 +302,115 @@ async def retry_translations(skill_id: str, _role: str = Depends(_EDIT_ROLE)) ->
         "quiz": [{"id": q["id"], "prompt": q.get("prompt") or "", "choices": list(q.get("choices") or [])} for q in (skill.get("quiz") or [])],
     }
 
-    translations = skill.get("translations") or {}
+    translations = dict(skill.get("translations") or {})
+    targets = (lang,) if lang else ("es", "tl")
     out: dict[str, Any] = {}
-    for lang in ("es", "tl"):
-        prior = translations.get(lang)
+    for target in targets:
+        prior = translations.get(target)
         if isinstance(prior, dict) and prior.get("status") == "stale":
-            prior = None  # force full retranslate; our diff considers "no prior" ⇒ all changed
-        # Retry has no "prior english" concept (we're redoing the current English); force full retranslate.
+            prior = None  # force full retranslate
         payload, status = await translate_language(
             english=english_for_lang,
             prior_english=None,
             prior_lang=prior,
-            lang=lang,
+            lang=target,
         )
         payload["status"] = status
-        out[lang] = payload
-    await db.skills.update_one({"_id": skill_id}, {"$set": {"translations": out}})
+        out[target] = payload
+        translations[target] = payload
+    await db.skills.update_one({"_id": skill_id}, {"$set": {"translations": translations}})
     return {"ok": True, "translations": out}
+
+
+# ---------------------------------------------------------------------------
+# Stage 1 — Replace Source Video (Care Manager only).
+# ---------------------------------------------------------------------------
+MAX_SOURCE_VIDEO_BYTES = 100 * 1024 * 1024
+
+
+@router.post("/skills/{skill_id}/replace_source_video")
+async def replace_source_video(
+    skill_id: str,
+    file: UploadFile = File(...),
+    _role: str = Depends(_SOURCE_VIDEO_ROLE),
+) -> dict:
+    """Replace the source video for an existing (non-draft) skill.
+
+    Flow:
+    1. Encode the uploaded file via `media.encode.encode_mp4` (the single
+       shared encoder — same +faststart / H.264 / AAC output every other
+       stored clip uses).
+    2. Store the mp4 via `MediaStore` → `video_id`.
+    3. For every step, re-extract a JPEG at `step.start` and store it;
+       overwrite `step.frame_id` on the skill doc.
+    4. Does NOT create a draft row and does NOT change `version` /
+       translations / publish state.
+    """
+    db = get_db()
+    skill = await db.skills.find_one({"_id": skill_id})
+    if not skill:
+        raise HTTPException(status_code=404, detail="skill not found")
+
+    buf = bytearray()
+    chunk_size = 1024 * 1024
+    while True:
+        chunk = await file.read(chunk_size)
+        if not chunk:
+            break
+        buf.extend(chunk)
+        if len(buf) > MAX_SOURCE_VIDEO_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"file exceeds {MAX_SOURCE_VIDEO_BYTES} bytes",
+            )
+
+    store = get_media_store()
+    with tempfile.TemporaryDirectory(prefix="fs-replace-video-") as tmp:
+        tmp_path = Path(tmp)
+        src = tmp_path / (file.filename or "source.mp4")
+        src.write_bytes(bytes(buf))
+
+        dst = tmp_path / "encoded.mp4"
+        try:
+            await encode_mp4(src, dst)
+        except EncodeError as exc:
+            raise HTTPException(status_code=415, detail=str(exc)) from exc
+
+        video_bytes = dst.read_bytes()
+        video_id = await store.save(
+            video_bytes, "video/mp4", filename=f"{uuid.uuid4().hex}.mp4"
+        )
+
+        steps = list(skill.get("steps") or [])
+        new_steps: list[dict] = []
+        for step in steps:
+            start = float(step.get("start") or 0.0)
+            frame_jpg = tmp_path / f"step-{step.get('n')}.jpg"
+            try:
+                await extract_frame(dst, start, frame_jpg)
+            except EncodeError as exc:
+                raise HTTPException(
+                    status_code=415,
+                    detail=f"frame extraction failed for step {step.get('n')}: {exc}",
+                ) from exc
+            frame_id = await store.save(
+                frame_jpg.read_bytes(),
+                "image/jpeg",
+                filename=f"{skill_id}-step-{step.get('n')}.jpg",
+            )
+            new_steps.append({**step, "frame_id": frame_id})
+
+    await db.skills.update_one(
+        {"_id": skill_id},
+        {"$set": {"video_id": video_id, "steps": new_steps}},
+    )
+    logger.info(
+        "replace_source_video: skill=%s new video_id=%s re-extracted %d frames",
+        skill_id, video_id, len(new_steps),
+    )
+    return {
+        "ok": True,
+        "skill_id": skill_id,
+        "video_id": video_id,
+        "steps_updated": len(new_steps),
+    }

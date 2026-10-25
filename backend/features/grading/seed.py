@@ -6,7 +6,11 @@ module re-ensures the skill at feature import time (and lazily on first
 clip upload, as a belt-and-suspenders).
 
 The skill `_id` is a UUID4 hex string, matching the convention set by
-the Phase-2 seed. Checks and translations are inlined.
+the Phase-2 seed. Checks, quiz and translations are inlined.
+
+Stage 1 (2026-02-25): quiz grew from 0 → 2 questions with full es/tl
+translations, so Glove removal now matches the brief's 2-questions-per-
+skill rule end-to-end.
 """
 from __future__ import annotations
 
@@ -22,7 +26,7 @@ logger = logging.getLogger("firstshift.grading.seed")
 GLOVE_SKILL_TITLE = "Glove removal"
 
 # Developer placeholder translations — flagged in CONTRACTS §10 for a
-# pro-translator pass.
+# pro-translator pass. Stage 1 added the quiz translations below.
 _SKILL_ES_TITLE = "Retiro de guantes"
 _SKILL_TL_TITLE = "Pagtanggal ng guwantes"
 
@@ -56,6 +60,72 @@ _CHECKS_TL: dict[str, str] = {
     "g7": "Maghugas ng kamay",
 }
 
+# Stage 1 — quiz: exactly 2 multiple-choice questions, 3 options each, 1 correct.
+_QUIZ: list[dict] = [
+    {
+        "id": "q1",
+        "prompt": "Which part of the first glove should your gloved hand touch?",
+        "choices": [
+            "The outside, pinching at the wrist",
+            "The inside, under the cuff",
+            "Any part — both are contaminated",
+        ],
+        "answer_index": 0,
+    },
+    {
+        "id": "q2",
+        "prompt": "After removing both gloves, what MUST you do before touching anything else?",
+        "choices": [
+            "Spray hand sanitizer on your gloves",
+            "Perform hand hygiene",
+            "Put on a fresh pair of gloves",
+        ],
+        "answer_index": 1,
+    },
+]
+
+_QUIZ_ES: list[dict] = [
+    {
+        "id": "q1",
+        "prompt": "¿Qué parte del primer guante debe tocar tu mano enguantada?",
+        "choices": [
+            "El exterior, pellizcando en la muñeca",
+            "El interior, debajo del puño",
+            "Cualquier parte — ambas están contaminadas",
+        ],
+    },
+    {
+        "id": "q2",
+        "prompt": "Después de quitarte ambos guantes, ¿qué DEBES hacer antes de tocar cualquier cosa?",
+        "choices": [
+            "Rociar desinfectante de manos sobre tus guantes",
+            "Realizar higiene de manos",
+            "Ponerte un par de guantes nuevos",
+        ],
+    },
+]
+
+_QUIZ_TL: list[dict] = [
+    {
+        "id": "q1",
+        "prompt": "Aling bahagi ng unang guwantes dapat hawakan ng iyong kamay na may guwantes?",
+        "choices": [
+            "Ang labas, pinching sa pulso",
+            "Ang loob, sa ilalim ng cuff",
+            "Kahit anong bahagi — pareho silang kontaminado",
+        ],
+    },
+    {
+        "id": "q2",
+        "prompt": "Pagkatapos hubarin ang parehong guwantes, ano ang DAPAT mong gawin bago humawak ng iba pang bagay?",
+        "choices": [
+            "I-spray ng hand sanitizer ang iyong mga guwantes",
+            "Maghugas ng kamay",
+            "Magsuot ng bagong pares ng guwantes",
+        ],
+    },
+]
+
 
 def _build_steps(check_lang_map: dict[str, str] | None = None) -> list[dict]:
     """Steps mirror checks n=1..7. start/end/frame_id intentionally null."""
@@ -80,16 +150,34 @@ def _skill_doc() -> dict:
         "title": GLOVE_SKILL_TITLE,
         "steps": _build_steps(),
         "checks": [dict(c) for c in _CHECKS],
-        "quiz": [],
+        "quiz": [dict(q) for q in _QUIZ],
         "translations": {
-            "es": {"title": _SKILL_ES_TITLE, "steps": [
-                {"n": i, "title": _CHECKS_ES[c["id"]], "instruction": _CHECKS_ES[c["id"]]}
-                for i, c in enumerate(_CHECKS, start=1)
-            ]},
-            "tl": {"title": _SKILL_TL_TITLE, "steps": [
-                {"n": i, "title": _CHECKS_TL[c["id"]], "instruction": _CHECKS_TL[c["id"]]}
-                for i, c in enumerate(_CHECKS, start=1)
-            ]},
+            "es": {
+                "title": _SKILL_ES_TITLE,
+                "steps": [
+                    {"n": i, "title": _CHECKS_ES[c["id"]], "instruction": _CHECKS_ES[c["id"]]}
+                    for i, c in enumerate(_CHECKS, start=1)
+                ],
+                "checks": [
+                    {"id": c["id"], "description": _CHECKS_ES[c["id"]]}
+                    for c in _CHECKS
+                ],
+                "quiz": _QUIZ_ES,
+                "status": "machine",
+            },
+            "tl": {
+                "title": _SKILL_TL_TITLE,
+                "steps": [
+                    {"n": i, "title": _CHECKS_TL[c["id"]], "instruction": _CHECKS_TL[c["id"]]}
+                    for i, c in enumerate(_CHECKS, start=1)
+                ],
+                "checks": [
+                    {"id": c["id"], "description": _CHECKS_TL[c["id"]]}
+                    for c in _CHECKS
+                ],
+                "quiz": _QUIZ_TL,
+                "status": "machine",
+            },
         },
         "created_at": now,
         "source": "grading-feature-seed",
@@ -106,23 +194,25 @@ async def ensure_glove_removal_skill() -> str:
     by `source: "grading-feature-seed"` which no editor path ever
     touches, then fall back to the original title probe for forks that
     were seeded before this field existed.
+
+    Stage 1: when a legacy row is found that is missing the new quiz or
+    checks/quiz translations, upgrade it in place so demo content ships
+    without a full re-seed.
     """
     db = get_db()
     existing = await db.skills.find_one(
-        {"source": "grading-feature-seed"}, {"_id": 1}
+        {"source": "grading-feature-seed"}
     )
     if existing:
+        await _upgrade_in_place(existing)
         return existing["_id"]
-    existing = await db.skills.find_one(
-        {"title": GLOVE_SKILL_TITLE}, {"_id": 1}
-    )
+    existing = await db.skills.find_one({"title": GLOVE_SKILL_TITLE})
     if existing:
-        # Legacy rows without the source tag — backfill the marker so
-        # the next call takes the fast path.
         await db.skills.update_one(
             {"_id": existing["_id"]},
             {"$set": {"source": "grading-feature-seed"}},
         )
+        await _upgrade_in_place(existing)
         return existing["_id"]
     doc = _skill_doc()
     try:
@@ -136,6 +226,49 @@ async def ensure_glove_removal_skill() -> str:
             return again["_id"]
         raise
     return doc["_id"]
+
+
+async def _upgrade_in_place(existing: dict) -> None:
+    """Stage 1 — top up legacy rows with the new quiz + full translations.
+
+    Only touches fields that are empty today. A Care Manager who edited
+    the quiz through the Draft Editor is NOT overwritten.
+    """
+    db = get_db()
+    patch: dict = {}
+
+    current_quiz = existing.get("quiz") or []
+    if not current_quiz:
+        patch["quiz"] = [dict(q) for q in _QUIZ]
+
+    translations = dict(existing.get("translations") or {})
+    for lang, quiz_lang, checks_lang in (
+        ("es", _QUIZ_ES, _CHECKS_ES),
+        ("tl", _QUIZ_TL, _CHECKS_TL),
+    ):
+        t = dict(translations.get(lang) or {})
+        changed = False
+        if not t.get("quiz"):
+            t["quiz"] = list(quiz_lang)
+            changed = True
+        if not t.get("checks"):
+            t["checks"] = [
+                {"id": c["id"], "description": checks_lang[c["id"]]}
+                for c in _CHECKS
+            ]
+            changed = True
+        if changed:
+            t.setdefault("status", "machine")
+            translations[lang] = t
+    if translations != (existing.get("translations") or {}):
+        patch["translations"] = translations
+
+    if patch:
+        await db.skills.update_one({"_id": existing["_id"]}, {"$set": patch})
+        logger.info(
+            "grading seed: upgraded Glove removal id=%s with fields=%s",
+            existing["_id"], sorted(patch.keys()),
+        )
 
 
 def schedule_startup_seed() -> None:
