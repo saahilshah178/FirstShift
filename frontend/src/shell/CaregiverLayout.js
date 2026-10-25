@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useEffect, useState } from "react";
-import { useParams, NavLink, Outlet, useNavigate } from "react-router-dom";
+import { useParams, NavLink, Outlet, useNavigate, useLocation } from "react-router-dom";
 import { api } from "@/api";
 import { caregiverNav, withCode } from "@/featureRegistry";
 
@@ -11,17 +11,35 @@ export function useCaregiver() {
   return v;
 }
 
-const FLAGS = { en: "🇺🇸", es: "🇪🇸", tl: "🇵🇭" };
+const LANG_NAMES = { en: "English", es: "Español", tl: "Tagalog" };
 
 export default function CaregiverLayout({ nav }) {
   const { code } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
   const [state, setState] = useState({ status: "loading" });
 
+  // Canonical access codes are uppercase (seed enforces [A-HJ-KM-NP-Z2-9]).
+  // Normalise anything lowercase a user may have hand-typed by redirecting
+  // in place. Done BEFORE the by-code lookup so the backend sees the
+  // canonical form and the URL you share works both ways.
+  const upperCode = (code || "").toUpperCase();
+  const needsUpperRedirect = code && code !== upperCode;
   useEffect(() => {
+    if (needsUpperRedirect) {
+      // Preserve the sub-path (/chat, /practice, …) after /c/<code>.
+      const suffix = location.pathname.slice(`/c/${code}`.length);
+      navigate(`/c/${upperCode}${suffix}${location.search}${location.hash}`, {
+        replace: true,
+      });
+    }
+  }, [needsUpperRedirect, code, upperCode, navigate, location.pathname, location.search, location.hash]);
+
+  useEffect(() => {
+    if (needsUpperRedirect) return undefined;
     const ac = new AbortController();
     api
-      .get(`/caregivers/by-code/${encodeURIComponent(code)}`, {
+      .get(`/caregivers/by-code/${encodeURIComponent(upperCode)}`, {
         signal: ac.signal,
       })
       .then((r) => setState({ status: "ok", data: r.data }))
@@ -43,7 +61,7 @@ export default function CaregiverLayout({ nav }) {
         }
       });
     return () => ac.abort();
-  }, [code]);
+  }, [upperCode, needsUpperRedirect]);
 
   if (state.status === "loading") {
     return (
@@ -70,19 +88,12 @@ export default function CaregiverLayout({ nav }) {
           <h1 className="text-2xl font-semibold">We can't find that code</h1>
           <p style={{ color: "var(--fs-muted)" }}>
             The link may be wrong, or the caregiver account was removed.
+            Please check with your care manager for the correct link.
           </p>
-          <button
-            type="button"
-            className="tap px-4 rounded-full font-ui text-sm"
-            style={{
-              background: "var(--fs-primary)",
-              color: "var(--fs-primary-fg)",
-            }}
-            onClick={() => navigate("/")}
-            data-testid="caregiver-back-home"
-          >
-            Back to agency
-          </button>
+          {/* "Back to agency" intentionally omitted — caregivers never
+              see the agency app. Agency staff who hit this get here by
+              typing a bad code in the picker; they can use the browser
+              back button or re-open the picker. */}
         </div>
       </div>
     );
@@ -120,15 +131,22 @@ export default function CaregiverLayout({ nav }) {
         >
           <div>
             <div className="flex items-center gap-2">
-              <span className="text-lg">
-                {FLAGS[caregiver.language] ?? "🏳️"}
-              </span>
               <h1
                 data-testid="caregiver-name"
                 className="text-lg font-semibold leading-tight"
               >
                 {caregiver.name}
               </h1>
+              <span
+                data-testid="caregiver-language"
+                className="font-ui text-[11px] px-2 py-0.5 rounded-full"
+                style={{
+                  color: "var(--fs-muted)",
+                  background: "var(--fs-accent)",
+                }}
+              >
+                {LANG_NAMES[caregiver.language] ?? caregiver.language}
+              </span>
             </div>
             <p
               className="text-xs font-ui"
