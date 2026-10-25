@@ -550,7 +550,11 @@ OpenAPI at **`/api/openapi.json`**. Interactive docs: `/api/docs`,
 - Signed, short-lived media access tokens (via the `url` field — not
   the raw UUID path).
 - Real auth. Role switch and `/c/{code}` are **not** real auth today —
-  they're convenient entry points for Phase 2 UI.
+  they're convenient entry points for Phase 2 UI. The Batch-3
+  `X-Firstshift-Role` header is a **client-declared** role (see
+  `backend/roles.py`); a motivated user can forge it by typing one
+  header. Everything the header protects — signoff, question answers,
+  skill writes — must be re-protected by real identity once auth lands.
 - Wire each service stub to `call_gemini` **on its own fork branch** —
   stubs stay fake on `main` so forks remain independent.
 - `questions`, `cards`, `incidents`, `plans` collection shapes.
