@@ -217,6 +217,103 @@ Multipart form:
 { "policies": [ { "id": "<string>", "title": "<string>", "text": "<string>" } ] }
 ```
 
+### 1c. Lessons jobs endpoint shapes (pinned)
+
+> Pinned in Batch-2 tightening after a tester hand-crafted a partial
+> `PUT /draft` payload and was surprised when the stored draft got
+> replaced wholesale. The frontend `DraftEditorPage` always sends the
+> whole draft on every save — any fork that reuses this contract
+> MUST do the same.
+
+#### `POST /api/lessons/skills/{skill_id}/edit` → `200`
+
+```jsonc
+{ "job_id": "edit-<skill_id>" }
+```
+
+Deterministic, idempotent, **and lazy**: this call does NOT insert a
+`lesson_jobs` row. The row materialises on the first successful
+`PUT /jobs/{job_id}/draft`. See `backend/scripts/cleanup_orphan_drafts.py`
+for how abandoned handles are swept.
+
+#### `GET /api/lessons/jobs/{job_id}` → `200`
+
+Returns the current job state. For a lazy edit handle
+(`job_id = "edit-<skill_id>"`) where no row exists yet, OR where the
+only row is a terminal `published` breadcrumb from a prior session,
+the response is **synthesised from the current published skill** with
+`draft_rev: 0`. Callers cannot distinguish synthetic from real on the
+wire — that's by design.
+
+```jsonc
+{
+  "id":            "<string: job_id>",
+  "status":        "<string: converting|analyzing|extracting_frames|ready|publishing|published|failed>",
+  "error":         "<string>",
+  "video_id":      "<string|null>",
+  "source_credit": "<string>",
+  "skill_id":      "<string|null>",
+  "duration_s":    "<number: seconds>",
+  "draft": {
+    "title":  "<string>",
+    "steps":  [ { "n": "<int>", "title": "<string>", "instruction": "<string>",
+                  "start": "<number: seconds>", "end": "<number: seconds>",
+                  "frame_id": "<string|null>" } ],
+    "checks": [ { "id": "<string>", "description": "<string>", "safety_critical": "<bool>" } ],
+    "quiz":   [ { "id": "<string>", "prompt": "<string>",
+                  "choices": [ "<string>", "<string>", "<string>" ],
+                  "answer_index": "<int: 0..2>" } ]
+  },
+  "problems":   [ { "where": "<string>", "message": "<string>", "blocking": "<bool>" } ],
+  "draft_rev":  "<int>",
+  "created_at": "<string: ISO-8601>",
+  "updated_at": "<string: ISO-8601>"
+}
+```
+
+#### `PUT /api/lessons/jobs/{job_id}/draft` → `200`
+
+**FULL REPLACE of the stored draft** (standard REST PUT semantics —
+NOT a merge/patch). The server validates the shape with
+`features/lessons/schemas.py::validate_analyze`, re-attaches
+`steps[].frame_id` from the client payload (the validator strips
+them), writes the new draft, and returns the fresh job state.
+
+Clients MUST always send the complete `draft` object. Sending a
+partial draft replaces the stored draft with just those fields.
+
+```jsonc
+// Request body
+{
+  "draft":         { /* full Draft shape; see GET above */ },
+  "draft_rev":     "<int: must match the server's current value>",
+  "source_credit": "<string: optional; omit to leave unchanged>"
+}
+```
+
+- `draft_rev` mismatch → `409 "draft_rev stale (got X, have Y)"`.
+- First save of a lazy handle (`edit-<skill_id>`) requires
+  `draft_rev: 0`; the handler materialises the row from the
+  published skill then applies the save.
+- Status `published` → `409 "published; use /skills/{id}/edit"`.
+
+#### `POST /api/lessons/jobs/{job_id}/publish` → `200 | 422`
+
+```jsonc
+// 200
+{ "skill_id": "<string>", "version": "<int>" }
+
+// 422 (publish-not-ready; `reasons` is a flat list of human strings)
+{ "detail": { "reasons": [ "<string>", "..." ] } }
+```
+
+**Post-publish wipe**: every `lesson_jobs` row with `skill_id` equal to
+the just-published skill is deleted. The published skill (`version`
+bump + `translations`) IS the audit trail. The draft drawer stays clean.
+
+Virgin lazy handles that have never been saved → `422 "No changes to
+publish — edit something first."` (same `detail.reasons` shape).
+
 ## 2. Frontend auto-discovery (features)
 
 `src/featureRegistry.js` uses `require.context('./features', true, /\/routes\.js$/)`

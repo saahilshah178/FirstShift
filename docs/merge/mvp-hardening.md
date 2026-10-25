@@ -9,6 +9,13 @@
 - **Duplicate skills**: hard-deleted the losers, migrated attempts/signoffs/cleared_skills/
   lesson_jobs/clients.required_skills refs to the winner (see **Dedup** below).
 - **Quiz count**: no min/max — publish allowed with any `N` quiz questions, incl. 0.
+- **Check-id prefixes**: the lane-B schema prefers `c1..cN`, but the validator now
+  **preserves** any non-empty string id (editor path for seeded skills with legacy
+  prefixes like `g1..g7` on Glove removal must not orphan attempt records). A
+  non-standard id is logged as a non-blocking `"preserved"` problem, never renamed.
+- **Draft API**: `PUT /api/lessons/jobs/{job_id}/draft` is a **full replace** of the
+  draft (standard REST PUT, not a merge). The frontend editor sends the whole draft
+  on every save; forks reusing this endpoint must do the same. See CONTRACTS §1c.
 - **Role matrix**:
   - **Care Manager** — unchanged, full access.
   - **Trainer** — no signoff, no card creation on `/questions/{id}/answer`,
@@ -27,6 +34,7 @@
 - `backend/scripts/upgrade_glove_removal.py`  — Batch-1 #6 Glove content pass (frames, quiz, es/tl check translations).
 - `backend/scripts/repair_cleared_skills.py`  — Batch-2 #7/#8 strip orphan clears + legacy status backfill.
 - `backend/scripts/cleanup_orphan_drafts.py`  — Batch-2 #13 prune abandoned/duplicate `lesson_jobs` rows.
+- `backend/scripts/backfill_seeded_timestamps.py` — Batch-2 tightening FIX B: distribute step timestamps across a skill's clip duration (ffprobe when a `video_id` resolves, 60s otherwise) when `steps[].start`/`end` are null.
 
 (More files added per batch — kept in-sync below.)
 
@@ -217,3 +225,80 @@ grep -n 'capture=' frontend/src/features/channel/ChatPage.js
 python -m backend.scripts.cleanup_orphan_drafts
   → deleted 4 orphan drafts (and nothing on re-run)
 ```
+
+### Batch 2 — tightening pass (tester follow-ups)
+
+Three required fixes + one cleanup folded into a single tightening commit:
+
+- **FIX A — override chip spacing + capitalisation.**
+  `frontend/src/features/grading/CompetencyDetailPage.js` — the override
+  chip now lives inside a fragment with an explicit `{" "}` text node
+  separating it from the `(role)` suffix, and the chip label is
+  `"Override"` (title-case). Verified: `document.querySelector(...).
+  textContent` on the signer line now reads
+  `"Signed by Nurse Miller (Care Manager) Override"` with a real
+  space, so copy-paste + screen readers no longer collapse the chip
+  into the role name.
+
+- **FIX B — seeded skills publishable after edit (option 2 chosen).**
+  Decision: **backfill plausible timestamps**, not validator tolerance.
+  Rationale: option 2 (even-distribution) *also* unlocks Batch-4 #21
+  per-step reference-video playback, so the extra work has a second
+  payoff; a `seeded: true` flag would require every reader to know
+  about the exception.
+  - `backend/scripts/backfill_seeded_timestamps.py` (new): scans
+    every skill, finds any step with `start is None` OR `end is None`,
+    probes the video duration via `ffprobe` when a `video_id`
+    resolves to a GridFS blob (fallback: 60 s), then distributes
+    steps evenly across that duration (`step i → start = (i-1)·D/N,
+    end = i·D/N`). Preserves whichever of `start`/`end` was already
+    set, so partially-timed skills aren't flattened. Idempotent.
+  - Backfill run this pass:
+    ```
+    patched 1 skill(s):
+      - 'Glove removal' (c60f1d3a): 7 steps across 60.0s → 8.57s/step
+    ```
+    Re-run → "nothing to backfill" (idempotent).
+  - Regression: Glove `POST /skills/{id}/edit` → `PUT /draft` → `POST
+    /publish` round-trip now returns `{"skill_id": ..., "version":
+    N+1}` with zero blocking problems.
+
+- **TWEAK-B follow-up (data-integrity bug caught during FIX B
+  regression).** The first round-trip surfaced that
+  `features/lessons/schemas.py::validate_analyze` was coercing every
+  check id to `c{N}` — orphaning Lucia's reviewed Glove attempt
+  (`6853fc06`), which references `g1..g7`. The validator now
+  **preserves** any non-empty string id and demotes the mismatch to
+  an informational `blocking: false` problem
+  (`"Non-standard id 'gN' preserved (new skills prefer 'cN')."`). Only
+  missing ids get the auto-assigned `c{N}`. The damaged state from
+  the regression run was repaired in the same commit (checks +
+  es/tl check arrays reverted to `g1..g7`; title restored to
+  `"Glove removal"`).
+
+- **FIX C — PUT /draft documented as a full replace.** `docs/CONTRACTS.md`
+  now has a pinned **§1c — Lessons jobs endpoint shapes** section
+  that enumerates `POST /skills/{id}/edit` (lazy handle), `GET
+  /jobs/{job_id}` (synthesises for virgin / terminal-breadcrumb
+  handles), `PUT /jobs/{job_id}/draft` (full replace, not merge —
+  with the explicit warning that clients MUST send the complete
+  draft), and `POST /jobs/{job_id}/publish` (post-publish wipe +
+  virgin-handle 422). The schema blocks match what the frontend
+  `DraftEditorPage` ships today.
+
+- **Cleanup — tester orphans + a duplicate seed row.**
+  - Deleted the tester's leftover `edit-c60f1d3a9c44493b8c5e2fd5d3644d82`
+    row and the stale `82ad36cd…` published breadcrumb for the Glove
+    skill (direct DB delete; `cleanup_orphan_drafts.py` doesn't sweep
+    canonical lazy edit handles by design, so a one-off was correct).
+  - Found + fixed a seed guard bug while here:
+    `features/grading/seed.py::ensure_glove_removal_skill` was probing
+    by `title == "Glove removal"` alone. If a Care Manager (or Batch-2
+    smoke test) temporarily renames the skill in the editor, the next
+    hot-reload re-ran the seed and inserted a second copy with a fresh
+    `uuid4()`. The guard now probes by `source: "grading-feature-seed"`
+    first and backfills the marker on legacy rows found by title. The
+    stray duplicate `3aba461b…` was hard-deleted (no attempts /
+    signoffs / cleared_skills referenced it); the canonical Glove row
+    now carries the `source` marker so the next restart is a no-op.
+

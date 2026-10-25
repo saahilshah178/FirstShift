@@ -123,12 +123,15 @@ export default function CompetencyDetailPage() {
                           ? ` (${row.latest.signer_role})`
                           : null}
                         {row.latest.override ? (
-                          <span
-                            className="ml-2 fs-chip fs-chip-warn"
-                            data-testid={`competency-override-${row.skill.id}`}
-                          >
-                            override
-                          </span>
+                          <>
+                            {" "}
+                            <span
+                              className="fs-chip fs-chip-warn"
+                              data-testid={`competency-override-${row.skill.id}`}
+                            >
+                              Override
+                            </span>
+                          </>
                         ) : null}
                       </>
                     ) : row.latest.decision === "send_back" ? (

@@ -97,10 +97,32 @@ def _skill_doc() -> dict:
 
 
 async def ensure_glove_removal_skill() -> str:
-    """Return the `_id` of the Glove removal skill, inserting if absent."""
+    """Return the `_id` of the Glove removal skill, inserting if absent.
+
+    Guard-by-stable-source: the title alone is NOT a reliable existence
+    check — a Care Manager may rename the skill via the lessons editor,
+    at which point a re-import of this module would see no "Glove
+    removal" row and happily insert a second seed copy. We first probe
+    by `source: "grading-feature-seed"` which no editor path ever
+    touches, then fall back to the original title probe for forks that
+    were seeded before this field existed.
+    """
     db = get_db()
-    existing = await db.skills.find_one({"title": GLOVE_SKILL_TITLE}, {"_id": 1})
+    existing = await db.skills.find_one(
+        {"source": "grading-feature-seed"}, {"_id": 1}
+    )
     if existing:
+        return existing["_id"]
+    existing = await db.skills.find_one(
+        {"title": GLOVE_SKILL_TITLE}, {"_id": 1}
+    )
+    if existing:
+        # Legacy rows without the source tag — backfill the marker so
+        # the next call takes the fast path.
+        await db.skills.update_one(
+            {"_id": existing["_id"]},
+            {"$set": {"source": "grading-feature-seed"}},
+        )
         return existing["_id"]
     doc = _skill_doc()
     try:

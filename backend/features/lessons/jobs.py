@@ -411,6 +411,11 @@ async def publish_job(job_id: str) -> dict:
             "video_id": doc.get("video_id") or (existing_skill or {}).get("video_id"),
             "translations": translations_out,
         }
+        # Preserve the seed marker (if any) so the grading seed guard
+        # keeps its fast path across publishes. See
+        # `features/grading/seed.py::ensure_glove_removal_skill`.
+        if existing_skill and existing_skill.get("source"):
+            skill_doc["source"] = existing_skill["source"]
         await db.skills.replace_one({"_id": skill_id}, skill_doc, upsert=True)
 
         await db.lesson_jobs.update_one(
