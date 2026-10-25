@@ -183,24 +183,22 @@ export default function SkillsPage() {
         ) : (
           <ul className="fs-card fs-divider" data-testid="skills-list">
             {skills.map((s) => (
-              <li
-                key={s.id}
-                data-testid={`skills-row-${s.id}`}
-                className="px-4 py-3 flex items-center justify-between gap-3"
-              >
+              <li key={s.id} data-testid={`skills-row-${s.id}`}>
                 <Link
                   to={`/skills/${s.id}`}
-                  className="font-semibold truncate flex-1"
                   data-testid={`skill-link-${s.id}`}
+                  className="tap flex items-center justify-between gap-3 px-4 py-3"
                 >
-                  {s.title}
+                  <span className="font-semibold truncate flex-1 min-w-0">
+                    {s.title}
+                  </span>
+                  <span
+                    className="text-xs font-ui whitespace-nowrap"
+                    style={{ color: "var(--fs-muted)" }}
+                  >
+                    {s.step_count} steps · {s.check_count} checks
+                  </span>
                 </Link>
-                <div
-                  className="text-xs font-ui"
-                  style={{ color: "var(--fs-muted)" }}
-                >
-                  {s.step_count} steps · {s.check_count} checks
-                </div>
               </li>
             ))}
           </ul>
