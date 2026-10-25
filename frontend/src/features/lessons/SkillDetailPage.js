@@ -229,7 +229,7 @@ function EnglishView({ skill }) {
                       fontWeight: q.answer_index === i ? 600 : 400,
                     }}
                   >
-                    {String.fromCharCode(65 + i)}. {o}{q.answer_index === i ? " ✓" : ""}
+                    {`${i + 1}. ${o}`}{q.answer_index === i ? " ✓" : ""}
                   </li>
                 ))}
               </ol>
@@ -490,7 +490,7 @@ function TranslationView({ skill, lang, onEdited, onReview, onRetry, retrying })
                         style={{ borderColor: "var(--fs-border)" }}
                       />
                     ) : (
-                      <span>{String.fromCharCode(65 + j)}. {o}</span>
+                      <span>{`${j + 1}. ${o}`}</span>
                     )}
                   </li>
                 ))}
