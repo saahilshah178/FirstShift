@@ -149,9 +149,17 @@ async def dev_reset_conversation(
       `correct_count` so the next inbound text triggers the welcome +
       skill menu again.
     - Messages are **preserved** so testers can still see history.
+    - **Stage 4 fixup**: also clears any `plans.items[].refresher`
+      overrides and deletes orphaned `refresher_drafts` rows for this
+      caregiver. Without this, a near-miss + reset sequence left the
+      caregiver stuck in refresher mode and the "Report near-miss"
+      button never re-appeared on the competency file. `incidents` are
+      an audit trail and are NOT wiped.
 
     Gated on `X-Firstshift-Role: Care Manager` via the shared
-    `require_role` dependency.
+    `require_role` dependency. Idempotent — safe to call repeatedly;
+    `modified`/`refresher_cleared`/`drafts_deleted` reflect what
+    actually changed on this call.
     """
     db = get_db()
     caregiver = await db.caregivers.find_one(
@@ -171,14 +179,36 @@ async def dev_reset_conversation(
             },
         },
     )
+
+    # Stage 4 fixup: wipe `refresher: true` flags on every plan item.
+    # `arrayFilters` is the cheapest way to target only the items that
+    # need the write (so `modified_count` stays accurate across reruns).
+    # If the caregiver has no plan doc yet (never read), nothing to do.
+    plan_update = await db.plans.update_one(
+        {"caregiver_id": caregiver_id},
+        {"$set": {"items.$[el].refresher": False}},
+        array_filters=[{"el.refresher": True}],
+    )
+
+    # Also drop any orphaned draft refresher messages for this caregiver.
+    # `incidents` are deliberately left intact — they're the audit log.
+    draft_del = await db.refresher_drafts.delete_many(
+        {"caregiver_id": caregiver_id},
+    )
+
     logger.info(
-        "dev reset: caregiver=%s matched=%d modified=%d",
-        caregiver_id, r.matched_count, r.modified_count,
+        "dev reset: caregiver=%s conv_modified=%d refresher_cleared=%d drafts_deleted=%d",
+        caregiver_id,
+        r.modified_count,
+        plan_update.modified_count,
+        draft_del.deleted_count,
     )
     return {
         "ok": True,
         "caregiver_id": caregiver_id,
         "matched": r.matched_count,
         "modified": r.modified_count,
+        "refresher_cleared": plan_update.modified_count,
+        "drafts_deleted": draft_del.deleted_count,
     }
 

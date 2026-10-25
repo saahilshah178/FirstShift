@@ -1,5 +1,46 @@
 # FirstShift — Changelog
 
+## Stage 4 fixups (2026-02-26)
+
+Demo-day fix uncovered by the Stage-3 + Stage-4 combined tester pass.
+
+### FIXUP — Dev reset also clears plan refresher state + draft refreshers
+
+`POST /api/channel/dev/reset/{caregiver_id}` previously only reset the
+caregiver's conversation state. After a near-miss demo + reset,
+`plans.items[].refresher = true` lingered on the affected skill — the
+plan read endpoint kept reporting `status: "refresher"`, so the "Report
+near-miss" button never re-appeared on the competency file (it's hidden
+when no item is currently cleared, and a `refresher` item isn't cleared).
+Orphaned `refresher_drafts` rows also stayed on screen.
+
+Reset endpoint now additionally:
+
+- `$set: {"items.$[el].refresher": false}` with
+  `arrayFilters=[{"el.refresher": True}]` on `plans` where
+  `caregiver_id` matches. Targeting only flagged items keeps
+  `modified_count` honest across reruns.
+- `db.refresher_drafts.delete_many({caregiver_id})` — orphaned drafts.
+- `incidents` are **deliberately preserved** (audit trail).
+
+Return shape adds `refresher_cleared` + `drafts_deleted` counts
+alongside the existing `matched` + `modified`. Still Care-Manager-gated
+via the shared `require_role` dependency; still idempotent.
+
+### Files touched
+
+```
+M  backend/features/channel/routes.py   (dev reset: plans.items[].refresher=false + delete refresher_drafts)
+M  docs/CHANGELOG.md
+```
+
+### Known deferrals (unchanged from Stage 3 reply)
+
+- **J–M** (New Hires intake form + voice intake + AI plan generation +
+  access-code generation) remain deferred as agreed.
+
+---
+
 ## Stage 4: Agency UI polish (2026-02-26)
 
 Ships items A–H of the Stage 4 brief. All pages verified at a 480 px
