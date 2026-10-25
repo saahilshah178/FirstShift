@@ -476,8 +476,10 @@ async def call_gemini(
 
 ## 6. MongoDB collections
 
-All ten collections are created at startup. Only index:
-`caregivers.access_code` **unique sparse**.
+All collections are created at startup. Only index:
+`caregivers.access_code` **unique sparse**. Fifteen collections total
+(ten originally seeded + `conversations`, `messages`, `cards`,
+`policies` from channel/questions + `lesson_jobs` from lessons/record).
 
 Access codes: 6 chars from `ABCDEFGHJKMNPQRSTUVWXYZ23456789` (no
 `0`,`O`,`1`,`I`,`L`). Generation + insert goes through
@@ -491,8 +493,12 @@ Access codes: 6 chars from `ABCDEFGHJKMNPQRSTUVWXYZ23456789` (no
 | `skills`     | `_id`, `title`, `steps: [{n,title,instruction,start,end,frame_id}]`, `checks: [{id,description,safety_critical:bool}]`, `quiz: [...]`, `translations: {es:{title,steps:[{n,title,instruction}]}, tl:{…}}`   |
 | `attempts`   | `_id`, `caregiver_id`, `skill_id`, `clip_id`, `checks: [{id,result,time,seen}]`, `overall`, `created_at`                                                                                                   |
 | `signoffs`   | `_id`, `attempt_id`, `caregiver_id`, `skill_id`, `signer`, `decision`, `note`, `at`                                                                                                                         |
-| `questions`  | Reserved for later phases.                                                                                                                                                                                  |
-| `cards`      | Reserved for later phases.                                                                                                                                                                                  |
+| `questions`  | `_id`, `caregiver_id`, `text`, `language` (`'en'`\|`'es'`\|`'tl'`), `status` (`'answered'`\|`'waiting_owner'`), `answer: str|null`, `card_id: str|null`, `source` (`'ai'`\|`'card'`\|`'owner'`), `created_at`, `answered_at: str|null` (shipped on `channel/questions`) |
+| `cards`      | `_id`, `role` (`'caregiver'`), `question`, `answer`, `created_at` (shipped on `channel/questions`) |
+| `policies`   | `_id`, `title`, `text`. Seeded idempotently at channel feature startup (`"Client refuses care"`, `"Client falls"`, `"Running late to a shift"` — developer placeholders). |
+| `conversations` | `_id`, `caregiver_id`, `channel` (`"web"`; `"whatsapp"` reserved), `state` (`idle|in_lesson|quiz|awaiting_video|awaiting_result`), `skill_id: str|null`, `step_index: int`, `quiz_index: int`, `correct_count: int`, `pending_attempt_id: str|null`, `greeted: bool`, `updated_at` (shipped on `channel/questions`) |
+| `messages`   | `_id`, `caregiver_id`, `direction` (`'in'`\|`'out'`), `channel` (`"web"`), `text`, `media_id: str|null`, `created_at` (shipped on `channel/questions`) |
+| `lesson_jobs` | `_id`, `status` (`converting|analyzing|extracting_frames|ready|publishing|published|failed`), `video_id`, `source_credit`, `skill_id: str|null`, `duration_s`, `draft` (shape per CONTRACTS §1c), `problems[]`, `draft_rev: int`, `created_at`, `updated_at`, heartbeat fields (shipped on `lessons/record`; owned by that feature). Published rows are wiped on publish — see §1c. |
 | `incidents`  | Reserved for later phases.                                                                                                                                                                                  |
 | `plans`      | Reserved for later phases.                                                                                                                                                                                  |
 
@@ -558,9 +564,16 @@ OpenAPI at **`/api/openapi.json`**. Interactive docs: `/api/docs`,
 - Wire each service stub to `call_gemini` **on its own fork branch** —
   stubs stay fake on `main` so forks remain independent.
 - `questions`, `cards`, `incidents`, `plans` collection shapes.
-- Pro-translator review of `translations.es` / `translations.tl`
+- **Pro-translator review** of `translations.es` / `translations.tl`
   placeholder strings in `backend/seed/seed.py` *and* in
   `backend/features/grading/seed.py` (Glove removal).
+- **WhatsApp integration deferred** per user instruction. The
+  `conversations.channel` and `messages.channel` fields are preserved
+  at `"web"` for forward-compat. No Twilio code exists today.
+- **`backend/scripts/clean_test_residue.py`** — recommended but never
+  written. Would purge tester-leftover `questions`, `lesson_jobs`,
+  `uploads` rows + the GridFS blobs they reference. Current cleanup is
+  manual (DB inspection + direct deletes). Priority: nice-to-have.
 - **Grading auth**: `POST /api/grading/clips` and
   `POST /api/grading/attempts/{id}/signoff` are open today. Tie them
   to caregiver access-code / agency staff identity once real auth lands.
@@ -573,3 +586,50 @@ OpenAPI at **`/api/openapi.json`**. Interactive docs: `/api/docs`,
   Nothing deletes them. Add a sweep job that deletes `frame_ids` blobs
   after `graded_at + 30 days` (same policy as clips, independently
   configurable).
+
+## 11. Role × endpoint allow-sets (Batch-3 header gate)
+
+> **Not real auth.** The frontend sends `X-Firstshift-Role` from
+> `localStorage` and the backend trusts it. A motivated user can forge
+> the header by typing one line into dev tools. This is a hide-and-
+> disable UX plus a server-side 403 on destructive flows, not a
+> security boundary. See §10 for the real-auth TODO.
+
+Shipped on `mvp-hardening` as `backend/roles.py` + the response/request
+interceptor pair in `frontend/src/api.js`. Full matrix:
+
+| Endpoint                                                       | Care Manager | Trainer | Scheduler |
+| -------------------------------------------------------------- |:------------:|:-------:|:---------:|
+| `POST /api/grading/attempts/{id}/signoff`                      | ✅           | 403     | 403       |
+| `POST /api/questions/{id}/answer`                              | ✅           | 403     | 403       |
+| `POST /api/questions/transcribe`                               | ✅           | 403     | 403       |
+| `POST /api/lessons/uploads`                                    | ✅           | ✅      | 403       |
+| `PUT  /api/lessons/uploads/{id}/chunks/{n}`                    | ✅           | ✅      | 403       |
+| `POST /api/lessons/uploads/{id}/complete`                      | ✅           | ✅      | 403       |
+| `POST /api/lessons/jobs/{id}/retry`                            | ✅           | ✅      | 403       |
+| `PUT  /api/lessons/jobs/{id}/draft`                            | ✅           | ✅      | 403       |
+| `POST /api/lessons/jobs/{id}/steps/{n}/frame`                  | ✅           | ✅      | 403       |
+| `POST /api/lessons/jobs/{id}/publish`                          | ✅           | ✅      | 403       |
+| `POST /api/lessons/skills/{id}/edit`                           | ✅           | ✅      | 403       |
+| `DELETE /api/lessons/skills/{id}` (archive)                    | ✅           | 403     | 403       |
+| `POST /api/lessons/skills/{id}/unarchive`                      | ✅           | 403     | 403       |
+| `PUT  /api/lessons/skills/{id}/translations/{lang}`            | ✅           | ✅      | 403       |
+| `POST /api/lessons/skills/{id}/translations/{lang}/review`     | ✅           | ✅      | 403       |
+| `POST /api/lessons/skills/{id}/translations/retry`             | ✅           | ✅      | 403       |
+
+Every GET and every caregiver-side endpoint is open to any role.
+
+### 403 detail shape (frontend parses `.allowed`)
+
+```jsonc
+// Header missing or empty
+{ "detail": { "reason": "role_required",
+              "allowed": ["Care Manager", "Trainer"] } }
+
+// Header present but not in allow-set
+{ "detail": { "reason": "role_not_allowed", "role": "Scheduler",
+              "allowed": ["Care Manager", "Trainer"] } }
+```
+
+The frontend's response interceptor fires `onForbidden(payload)` on
+either reason, surfacing a toast via `frontend/src/shell/Toasts.js`.
