@@ -1,9 +1,33 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useCaregiver } from "@/shell/CaregiverLayout";
 import { api, absoluteUrl } from "@/api";
 
+/* Localized "no quick reply yet, type a message" placeholder label and the
+   generic "Send" button label used by the composer. Keep tiny — anything
+   that comes from the FSM is already localized server-side. */
+const COMPOSER_PLACEHOLDER = {
+  en: "Type a message…",
+  es: "Escribe un mensaje…",
+  tl: "Mag-type ng mensahe…",
+};
+
+/* The LATEST outbound message is the single source of truth for the
+   quick-reply bar (Stage 2 — Item A). If it has a `question_type`, the
+   bar renders against it. If the latest outbound has no `question_type`,
+   the bar is hidden (no stale carry-over from an earlier question). */
+function latestQuestion(messages) {
+  if (!Array.isArray(messages)) return null;
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const m = messages[i];
+    if (!m || m.direction !== "out") continue;
+    return m.question_type ? m : null;
+  }
+  return null;
+}
+
 export default function ChatPage() {
   const { caregiver, agency } = useCaregiver();
+  const lang = caregiver.language || "en";
   const [messages, setMessages] = useState([]);
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
@@ -14,6 +38,7 @@ export default function ChatPage() {
   const inputRef = useRef(null);
   const scrollRef = useRef(null);
   const lastMessageIdRef = useRef(null);
+  const userScrolledUpRef = useRef(false);
 
   const load = useCallback(async () => {
     try {
@@ -39,18 +64,83 @@ export default function ChatPage() {
     return () => clearInterval(t);
   }, [load]);
 
-  // Auto-scroll only when a NEW message arrives (watching length alone
-  // misses the case where polling returns the same count but with an
-  // edited last message, and watching the array reference would scroll
-  // every poll even if nothing changed). Tracks last message id.
+  // Track whether the user has scrolled up (preserve "don't jump down
+  // while they're reading" behaviour). We only consider them "scrolled
+  // up" when they are > 60 px from the bottom.
+  const onThreadScroll = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const bottomGap = el.scrollHeight - el.scrollTop - el.clientHeight;
+    userScrolledUpRef.current = bottomGap > 60;
+  };
+
+  // Auto-scroll on NEW last message. If the new message has <img>
+  // children, wait for every image to resolve `onLoad`/`onError`
+  // (whichever first) before scrolling, so the scroll lands on the
+  // final rendered height (not the zero-height placeholder). Capped
+  // at 1500 ms so a stuck image never freezes the UI.
   useEffect(() => {
     const last = messages[messages.length - 1];
     if (!last || !scrollRef.current) return;
     const id = last.id || last._id || last.at;
     if (lastMessageIdRef.current === id) return;
     lastMessageIdRef.current = id;
-    scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    if (userScrolledUpRef.current) return;
+
+    const doScroll = () => {
+      const el = scrollRef.current;
+      if (!el) return;
+      el.scrollTop = el.scrollHeight;
+    };
+
+    // Find <img> elements inside the latest bubble. We query by the
+    // bubble's id so a mid-stream message doesn't delay the scroll.
+    const bubble = scrollRef.current.querySelector(
+      `[data-testid="chat-msg-${last.id}"]`,
+    );
+    const imgs = bubble ? Array.from(bubble.querySelectorAll("img")) : [];
+    const pending = imgs.filter((img) => !img.complete);
+    if (pending.length === 0) {
+      doScroll();
+      return;
+    }
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      doScroll();
+    }, 1500);
+    Promise.all(
+      pending.map(
+        (img) =>
+          new Promise((resolve) => {
+            const done = () => resolve(null);
+            img.addEventListener("load", done, { once: true });
+            img.addEventListener("error", done, { once: true });
+          }),
+      ),
+    ).then(() => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      doScroll();
+    });
   }, [messages]);
+
+  const refocusInput = () => {
+    // Keep the composer focused so repeated quick-reply taps + manual
+    // typing feel like one continuous conversation. `preventScroll`
+    // stops the composer from stealing the scroll back from the thread
+    // after the auto-scroll above. The `setTimeout(…, 0)` gives React
+    // a tick to flush `setSending(false)` so the textarea is no longer
+    // `disabled` when we call `.focus()` — focusing a disabled element
+    // is a silent no-op in every modern browser.
+    setTimeout(() => {
+      if (inputRef.current && !inputRef.current.disabled) {
+        inputRef.current.focus({ preventScroll: true });
+      }
+    }, 0);
+  };
 
   const sendText = async (payload) => {
     const content = (payload ?? text).trim();
@@ -62,18 +152,14 @@ export default function ChatPage() {
         caregiver_id: caregiver.id,
         text: content,
       });
-      setText("");
+      if (payload === undefined) setText("");
       await load();
     } catch (e) {
       const detail = e?.response?.data?.detail;
       setErr(typeof detail === "string" ? detail : e?.message || "failed");
     } finally {
       setSending(false);
-      // Keep the composer textarea focused so repeated quick-reply taps
-      // + manual typing feel like one continuous conversation.
-      if (inputRef.current) {
-        inputRef.current.focus({ preventScroll: true });
-      }
+      refocusInput();
     }
   };
 
@@ -93,9 +179,8 @@ export default function ChatPage() {
       const form = new FormData();
       form.append("caregiver_id", caregiver.id);
       form.append("file", f);
-      await api.post("/channel/inbound-video", form, {
-        headers: { "Content-Type": "multipart/form-data" },
-      });
+      // Let axios set its own multipart Content-Type (with boundary).
+      await api.post("/channel/inbound-video", form);
       await load();
     } catch (e2) {
       const detail = e2?.response?.data?.detail;
@@ -103,24 +188,40 @@ export default function ChatPage() {
     } finally {
       setUploading(false);
       if (videoInputRef.current) videoInputRef.current.value = "";
+      refocusInput();
     }
   };
 
-  const quickReplies = (() => {
-    if (convState?.state === "quiz") return ["1", "2", "3"];
-    if (convState?.state === "in_lesson") return ["Next"];
-    if (convState?.state === "idle") return ["1", "2", "3"];
+  /* Stage 2 — Item A. The quick-reply bar is derived EXCLUSIVELY from
+     the latest outbound message with a `question_type`. If there is no
+     such message, the bar is hidden entirely (no empty row). */
+  const quickReplies = useMemo(() => {
+    const q = latestQuestion(messages);
+    if (!q) return [];
+    const payload = q.question_payload || {};
+    if (q.question_type === "skill_menu") {
+      const skills = Array.isArray(payload.skills) ? payload.skills : [];
+      return skills.map((s) => ({ label: `${s.n}. ${s.title}`, send: String(s.n) }));
+    }
+    if (q.question_type === "step") {
+      const label = (payload.next_label || "Next").trim();
+      return [{ label, send: label }];
+    }
+    if (q.question_type === "quiz") {
+      const options = Array.isArray(payload.options) ? payload.options : [];
+      return options.map((o) => ({ label: `${o.n}. ${o.text}`, send: String(o.n) }));
+    }
     return [];
-  })();
+  }, [messages]);
 
   return (
-    <div className="min-h-full flex flex-col" data-testid="caregiver-chat-page">
+    <div className="h-full flex flex-col" data-testid="caregiver-chat-page">
       {/* Thread */}
       <section
         ref={scrollRef}
+        onScroll={onThreadScroll}
         data-testid="chat-thread"
         className="flex-1 px-4 py-4 space-y-2 overflow-y-auto"
-        style={{ minHeight: "60vh", maxHeight: "68vh" }}
       >
         {messages.length === 0 ? (
           <div
@@ -161,9 +262,9 @@ export default function ChatPage() {
         </p>
       ) : null}
 
-      {/* Composer */}
+      {/* Composer. No padding below — sits directly above the fixed nav. */}
       <section
-        className="px-3 py-3 border-t"
+        className="px-3 pt-3 pb-2 border-t"
         style={{
           borderColor: "var(--fs-border)",
           background: "var(--fs-surface)",
@@ -171,35 +272,36 @@ export default function ChatPage() {
       >
         {quickReplies.length > 0 ? (
           <div
-            className="flex gap-2 mb-2"
-            data-testid="chat-quick-replies"
+            className="flex flex-wrap gap-2 mb-2"
+            data-testid="quickreplies"
           >
-            {quickReplies.map((q) => (
+            {quickReplies.map((q, i) => (
               <button
-                key={q}
+                key={`${q.label}-${i}`}
                 type="button"
-                onClick={() => sendText(q)}
+                onClick={() => sendText(q.send)}
                 disabled={sending}
-                data-testid={`chat-quick-${q.toLowerCase()}`}
+                data-testid={`quickreply-${i}`}
                 className="tap px-3 rounded-full text-sm font-ui border"
                 style={{
                   borderColor: "var(--fs-border)",
                   color: "var(--fs-fg)",
                 }}
               >
-                {q}
+                {q.label}
               </button>
             ))}
           </div>
         ) : null}
         <div className="flex items-end gap-2">
           <textarea
+            ref={inputRef}
             value={text}
             onChange={(e) => setText(e.target.value)}
             onKeyDown={handleKey}
             disabled={sending || uploading}
             rows={1}
-            placeholder="Type a message…"
+            placeholder={COMPOSER_PLACEHOLDER[lang] || COMPOSER_PLACEHOLDER.en}
             data-testid="chat-input"
             className="flex-1 min-h-11 rounded-xl px-3 py-2 font-ui text-sm resize-none"
             style={{

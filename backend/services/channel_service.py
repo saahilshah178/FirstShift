@@ -106,10 +106,19 @@ async def send_message_async(
     text: str,
     *,
     media_id: str | None = None,
+    question_type: str | None = None,
+    question_payload: dict | None = None,
 ) -> dict:
     """Async variant used by the channel's state machine. Returns the same
     public shape; writes synchronously (awaited) so the chat UI sees the
-    message immediately on its next poll."""
+    message immediately on its next poll.
+
+    Stage 2 — `question_type` + `question_payload` persist on the outbound
+    message so the caregiver UI's quick-reply bar renders against the
+    LATEST question message and never carries stale state from an earlier
+    question. See `features/channel/state_machine.py::_send` + `ChatPage.js`.
+    Current `question_type` values: "skill_menu" | "step" | "quiz".
+    """
     message_id = uuid.uuid4().hex
     now = datetime.now(timezone.utc).isoformat()
     doc = {
@@ -121,6 +130,10 @@ async def send_message_async(
         "media_id": media_id,
         "created_at": now,
     }
+    if question_type:
+        doc["question_type"] = question_type
+    if question_payload is not None:
+        doc["question_payload"] = question_payload
     await get_db().messages.insert_one(doc)
     return {
         "message_id": message_id,

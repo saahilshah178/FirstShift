@@ -68,42 +68,87 @@ async def list_skills(include_archived: bool = Query(False)):
 
 @router.get("/caregiver/{caregiver_id}")
 async def caregiver_lessons(caregiver_id: str):
+    """Caregiver's lesson list with status chips.
+
+    Stage 2 — Items F + G: every skill (cleared + remaining) carries a
+    `status` value drawn from the SAME source of truth agency uses
+    (`cleared_skills`, `attempts`, `conversations`). The caregiver's
+    Lessons tab and Practice tab both render these chips with no extra
+    plumbing on the frontend side.
+
+    Status values:
+      - "cleared"               — skill in `caregiver.cleared_skills`.
+      - "awaiting_signoff"      — caregiver has an attempt in
+                                   `ready_to_sign`/`needs_practice` for
+                                   this skill, not yet `reviewed`.
+      - "practice_video_next"   — conversation.state == `awaiting_video`
+                                   AND conv.skill_id == this skill
+                                   (walked the steps + quiz, no clip yet).
+      - "in_progress"           — conversation.state ∈ {`in_lesson`,`quiz`}
+                                   AND conv.skill_id == this skill.
+      - "todo" or null          — none of the above (no chip in the UI).
+    """
     db = get_db()
     caregiver = await db.caregivers.find_one({"_id": caregiver_id})
     if not caregiver:
         raise HTTPException(status_code=404, detail="caregiver not found")
+    lang = caregiver.get("language") or "en"
     all_skills = await db.skills.find({"archived": {"$ne": True}}).to_list(length=200)
     cleared = set(caregiver.get("cleared_skills") or [])
-    # Fix #20 — surface which "remaining" skills already have an attempt in
-    # flight so the caregiver UI can swap the "to do" chip for "awaiting
-    # sign-off" once they've been through all steps + quiz + recording.
     SIGNABLE = ("ready_to_sign", "needs_practice")
     attempts = await db.attempts.find(
         {"caregiver_id": caregiver_id, "status": {"$in": list(SIGNABLE)}},
     ).to_list(length=500)
-    # Only count attempts that are NOT yet signed off (reviewed).
     attempted = {
         a["skill_id"]
         for a in attempts
         if a.get("skill_id") and not a.get("reviewed")
     }
+    conv = await db.conversations.find_one({"caregiver_id": caregiver_id})
+    conv_state = (conv or {}).get("state")
+    conv_skill = (conv or {}).get("skill_id")
+
+    def _localized_title(skill: dict) -> str:
+        if lang in ("es", "tl"):
+            t = (skill.get("translations") or {}).get(lang) or {}
+            if t.get("title"):
+                return t["title"]
+        return skill.get("title") or ""
+
+    def _status_for(skill_id: str) -> str:
+        if skill_id in cleared:
+            return "cleared"
+        if skill_id in attempted:
+            return "awaiting_signoff"
+        if conv_skill == skill_id:
+            if conv_state == "awaiting_video":
+                return "practice_video_next"
+            if conv_state in ("in_lesson", "quiz"):
+                return "in_progress"
+        return "todo"
+
+    def _row(skill: dict) -> dict:
+        sid = skill["_id"]
+        return {
+            "id": sid,
+            "title": _localized_title(skill),
+            "title_en": skill.get("title") or "",
+            "step_count": len(skill.get("steps", [])),
+            "status": _status_for(sid),
+            # Legacy field kept for pre-Stage-2 clients that still check it.
+            "has_pending_attempt": sid in attempted,
+        }
+
+    cleared_rows = [_row(s) for s in all_skills if s["_id"] in cleared]
+    remaining_rows = [_row(s) for s in all_skills if s["_id"] not in cleared]
     return {
-        "caregiver": {"id": caregiver["_id"], "name": caregiver.get("name")},
-        "cleared": [
-            {"id": s["_id"], "title": s["title"], "step_count": len(s.get("steps", []))}
-            for s in all_skills
-            if s["_id"] in cleared
-        ],
-        "remaining": [
-            {
-                "id": s["_id"],
-                "title": s["title"],
-                "step_count": len(s.get("steps", [])),
-                "has_pending_attempt": s["_id"] in attempted,
-            }
-            for s in all_skills
-            if s["_id"] not in cleared
-        ],
+        "caregiver": {
+            "id": caregiver["_id"],
+            "name": caregiver.get("name"),
+            "language": lang,
+        },
+        "cleared": cleared_rows,
+        "remaining": remaining_rows,
     }
 
 

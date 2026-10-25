@@ -98,6 +98,15 @@ input[type="submit"] {
     flex-direction: column;
 }
 
+/* Caregiver side: lock to the viewport height so the chat composer sits
+   directly above the fixed bottom-tab bar (Stage 2 — Item E). The outer
+   frame NEVER grows past 100vh; the thread section scrolls inside. */
+.fs-frame[data-side="caregiver"] {
+    height: 100vh;
+    min-height: 0;
+    overflow: hidden;
+}
+
 .fs-card {
     background: var(--fs-surface);
     border: 1px solid var(--fs-border);

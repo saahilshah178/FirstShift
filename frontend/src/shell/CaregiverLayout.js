@@ -163,7 +163,10 @@ export default function CaregiverLayout({ nav }) {
             {code}
           </code>
         </header>
-        <main className="flex-1 pb-24" data-testid="caregiver-main">
+        <main
+          className="flex-1 pb-14 overflow-y-auto"
+          data-testid="caregiver-main"
+        >
           <Outlet />
         </main>
         <nav

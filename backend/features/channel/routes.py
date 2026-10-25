@@ -13,7 +13,7 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from db import get_db
 from media.store import get_media_store
 
-from .state_machine import handle_inbound, _public_state  # noqa: F401
+from .state_machine import handle_inbound, _public_state, open_lesson  # noqa: F401
 
 logger = logging.getLogger("firstshift.channel.routes")
 
@@ -27,8 +27,9 @@ ACCEPTED_VIDEO_TYPES = {"video/mp4", "video/quicktime", "video/webm"}
 async def list_messages(caregiver_id: str) -> dict:
     db = get_db()
     rows = await db.messages.find({"caregiver_id": caregiver_id}).sort("created_at", 1).to_list(length=500)
-    out = [
-        {
+    out = []
+    for r in rows:
+        row = {
             "id": r["_id"],
             "direction": r.get("direction"),
             "channel": r.get("channel"),
@@ -36,8 +37,13 @@ async def list_messages(caregiver_id: str) -> dict:
             "media_id": r.get("media_id"),
             "created_at": r.get("created_at"),
         }
-        for r in rows
-    ]
+        # Stage 2 — surface question metadata so the caregiver UI's
+        # quick-reply bar reads from the LATEST question message.
+        if r.get("question_type"):
+            row["question_type"] = r["question_type"]
+            if r.get("question_payload") is not None:
+                row["question_payload"] = r["question_payload"]
+        out.append(row)
     return {"messages": out}
 
 
@@ -108,3 +114,21 @@ async def inbound_video(
         media_id=media_id,
     )
     return {"ok": True, "media_id": media_id, "conversation": result}
+
+
+@router.post("/open-lesson")
+async def open_lesson_route(body: dict) -> dict:
+    """Jump into a specific lesson from the Lessons tab (Stage 2 — Item F).
+
+    Body: `{caregiver_id, skill_id}`. Transitions the FSM to `in_lesson`
+    and sends step 0 as a bot message, same shape as the regular menu
+    pick. The frontend then navigates to `/c/{code}/chat`.
+    """
+    caregiver_id = str(body.get("caregiver_id") or "").strip()
+    skill_id = str(body.get("skill_id") or "").strip()
+    if not caregiver_id or not skill_id:
+        raise HTTPException(status_code=422, detail="caregiver_id and skill_id required")
+    result = await open_lesson(caregiver_id, skill_id)
+    if isinstance(result, dict) and result.get("error"):
+        raise HTTPException(status_code=404, detail=result["error"])
+    return {"ok": True, "conversation": result}

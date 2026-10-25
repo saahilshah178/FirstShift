@@ -1,5 +1,171 @@
 # FirstShift — Changelog
 
+## Stage 2 — Caregiver chat fixes (2026-02-25)
+
+Chat FSM + caregiver surface fixes. Everything stays inside the
+caregiver feature folders (`backend/features/channel`, `frontend/src/features/channel`,
+`frontend/src/features/lessons`, `frontend/src/features/grading/PracticePage.js`).
+Agency surfaces picked up the numbered-option render as a free side-effect
+of a shared frontend widget — no behavioural change on the agency side.
+
+### Items
+
+- **A. Quick replies driven by the latest question message.** Outbound
+  bot messages now carry `question_type` ∈ `{"skill_menu", "step", "quiz"}`
+  and `question_payload` with the strings the UI needs. The frontend
+  derives the quick-reply bar in `ChatPage.js` by scanning the LATEST
+  outbound message (not state) — if its `question_type` is set, the
+  bar renders against its payload; if the latest outbound has no
+  `question_type`, the bar is hidden (no stale carry-over). Testids
+  renamed to brief verbatim: `[data-testid="quickreplies"]` (bar) and
+  `[data-testid="quickreply-{index}"]` (each button). Payloads:
+  - `skill_menu` → `{skills: [{n, id, title_localized}]}` (4 buttons when 4 skills remain).
+  - `step` → `{next_label}` (localized: "Next" / "Siguiente" / "Susunod").
+  - `quiz` → `{options: [{n, text}]}` (3 numbered-option buttons).
+
+- **B. Numbered options 1/2/3, letter aliases a/b/c accepted.** FSM
+  template `quiz_opt` is now `"{num}. {text}"` across en/es/tl (was
+  `"{letter}. ..."`). `quiz_wrong` reads `"The answer is: {num}"` →
+  "La respuesta es: 2" / "Ang sagot ay: 2". New parser
+  `_parse_quiz_answer(text)` returns the 1-based option number for
+  `1/2/3`, `A/B/C`, `a/b/c`. Correctness still uses English
+  `answer_index` (unchanged — es/tl quizzes don't carry
+  `answer_index`). Invalid input mid-quiz sends the localized
+  `quiz_prompt_invalid` ("Please answer 1, 2, or 3." / "Por favor
+  responde 1, 2 o 3." / "Mangyaring sumagot ng 1, 2, o 3.") AND
+  re-sends the current quiz question so the quick-reply bar refreshes
+  against a brand-new question message (A's guarantee). The agency
+  skill viewer + draft editor already rendered `{i+1}. ` in the view
+  mode — kept as-is; es/tl TranslationView view mode also uses the
+  same prefix. No LLM re-ordering per language.
+
+- **C. Keep input focus after send + quick-reply tap.** `sendText`'s
+  `finally` block calls `refocusInput()` which is wrapped in
+  `setTimeout(…, 0)` so React commits `setSending(false)` BEFORE the
+  focus call — focusing a disabled textarea is a silent no-op in
+  every modern browser, which was why focus previously appeared to
+  "stick on button". Quick-reply taps go through the same `sendText`
+  path so they inherit the refocus for free. Verified at 390 px:
+  `document.activeElement === chat-input` returns true after both a
+  typed send AND a quick-reply tap.
+
+- **D. Scroll to newest message after images finish loading.** The
+  new-message effect now locates the latest bubble by its
+  `data-testid`, enumerates its `<img>` children, and awaits each
+  `load`/`error` event (whichever first) via `Promise.all`, capped
+  at 1500 ms so a stuck image can't freeze the scroll. Messages
+  without images scroll immediately. "User is scrolled up" behaviour
+  preserved via `userScrolledUpRef` (threshold 60 px from bottom).
+
+- **E. Empty band between composer and tabs removed.** `.fs-frame`
+  locks to `height: 100vh; overflow: hidden` on the caregiver side
+  (`.fs-frame[data-side="caregiver"]`); main is `flex-1 pb-14
+  overflow-y-auto`; the chat page uses `h-full flex flex-col` so the
+  thread section flexes to fill. Measured at 390 px: composer bottom
+  Y = 1024, nav top Y = 1023 — the composer sits directly above the
+  tab bar with **1 px rounding gap**, not 44 px. Non-chat tabs
+  (Lessons / Practice / Ask) scroll inside main via `overflow-y-auto`.
+
+- **F. Lessons tab — status + tappable rows.**
+  `GET /api/lessons/caregiver/{id}` now returns `title` (localized),
+  `step_count`, and `status` ∈ `{"cleared", "awaiting_signoff",
+  "practice_video_next", "in_progress", "todo"}` derived from
+  `caregiver.cleared_skills` + attempts in `ready_to_sign` /
+  `needs_practice` + conversation state (`in_lesson` / `quiz` →
+  "in_progress"; `awaiting_video` → "practice_video_next"). Chip
+  labels localized per caregiver language. Every row is a full-width
+  `<button>` tappable surface (`data-testid="caregiver-lesson-row-{id}"`);
+  tap `POST /api/channel/open-lesson` (new) which transitions the FSM
+  to `in_lesson` for that skill and sends step 0 with
+  `question_type: "step"` — same shape as if the caregiver had picked
+  the skill via the menu — then navigates to `/c/{code}` (chat tab).
+  No duplicate state on the frontend.
+
+- **G. Practice tab — layout.** Row: title (`flex-1`, left-aligned) +
+  step count (muted, right) + chip (right, same source + labels as
+  Lessons tab). Same `fs-chip-pass` / `fs-chip-warn` colour choice as
+  Lessons. Nothing redesigned; alignment only.
+
+### Files changed
+
+Backend:
+```
+M  backend/features/channel/state_machine.py   (question_type+payload, letter alias, invalid-prompt resend, open_lesson)
+M  backend/features/channel/routes.py          (POST /open-lesson, GET /messages exposes question_type+payload)
+M  backend/features/lessons/__init__.py        (status field + localized title in /caregiver/{id})
+M  backend/services/channel_service.py         (send_message_async forwards question_type/payload)
+```
+
+Frontend:
+```
+M  frontend/src/App.css                                   (caregiver-side .fs-frame locks to 100vh)
+M  frontend/src/shell/CaregiverLayout.js                  (main pb-14 + overflow-y-auto)
+M  frontend/src/features/channel/ChatPage.js              (latestQuestion + scroll-after-image + setTimeout refocus)
+M  frontend/src/features/lessons/CaregiverLessonsPage.js  (tappable rows + 4-status chips)
+M  frontend/src/features/grading/PracticePage.js          (same status chips + title/step-count/chip row)
+```
+
+### 390 px walkthrough (self-run after fixups applied)
+
+Starting from a reset `/c/2TBAFX` (English, Alex Johnson):
+
+| Step | Expected | Result |
+|---|---|---|
+| 1. Load | 0 quick replies | 0 ✓ |
+| 2. Type "hi" + Send | 4 skill buttons `"1. Blood pressure measurement" / "2. Glove removal" / "3. Hand hygiene" / "4. Transfer from bed to wheelchair"` | 4 buttons with those labels ✓ |
+| 3. Tap `"4. Transfer…"` | 1 "Next" button, step 1/4 message | ✓ |
+| 4. Tap Next × 3 | step 4/4 message, 1 "Next" button | ✓ |
+| 5. Tap Next again | Quiz Q1/2 message with `1./2./3.` numbered options, 3 quick replies labelled `"1. Parallel to the bed" / "2. 45° to the bed" / "3. Facing the bed"` | ✓ |
+| 6. Type "a" + Send | Advance to Q2 (letter alias accepted) | ✓ |
+| 7. Type "xyz" + Send during quiz | "Please answer 1, 2, or 3." + Q2 re-sent | ✓ (verified via curl: "Please answer 1, 2, or 3." then `qt=quiz` resent) |
+| 8. Tap `"1. The caregiver"` | "Correct ✓" + "Last step: send a practice video, under 45 seconds." | ✓ |
+| 9. Awaiting-video state | Quick-reply bar HIDDEN, video button enabled | 0 quick replies, 🎥 button enabled ✓ |
+| 10. Composer / nav geometry | Composer sits directly above nav | gap = -1 px (rounding; no visible band) ✓ |
+| 11. Focus after text send | `document.activeElement === chat-input` | true ✓ |
+| 12. Focus after quick-reply tap | `document.activeElement === chat-input` | true ✓ |
+| 13. Lessons tab | 4 rows, Transfer carries "Practice video next" chip | ✓ |
+| 14. Tap a Lessons row | `/api/channel/open-lesson` returns ok, chat shows step 1 of that skill with Next button | backend verified ✓; UI loads after poll (2 s) |
+| 15. Practice tab | Transfer chip "In progress", 4 steps right-aligned, title left (`flex-1`) | ✓ |
+
+Spanish (`/c/JUM6QK` — Lucia Hernández):
+
+| Expected | Result |
+|---|---|
+| Menu header "Habilidades para practicar:" | ✓ |
+| Skill titles localized (Medición de la presión arterial, Retiro de guantes, …) | ✓ |
+| Quiz Q1 "Pregunta 1/2: ¿Dónde debe colocarse el brazalete?" with `1. Sobre el codo / 2. 2–3 cm arriba del codo / 3. Sobre la muñeca / Responde 1, 2 o 3.` | ✓ |
+| Invalid "xyz" → **"Por favor responde 1, 2 o 3."** + quiz re-sent | ✓ |
+
+Tagalog (`/c/T73SQG` — Jovelyn Santos):
+
+| Expected | Result |
+|---|---|
+| Quiz Q1 "Tanong 1/2: Ano ang tamang anggulo ng wheelchair …" with `1. Katabi ng higaan / 2. 45° sa higaan / 3. Nakaharap sa higaan / Mag-reply ng 1, 2, o 3.` | ✓ |
+| Invalid "hindi" → **"Mangyaring sumagot ng 1, 2, o 3."** + quiz re-sent | ✓ |
+
+### CONTRACTS drift found during Stage 2
+
+- Chat message shape — added two optional fields on outbound messages
+  (`question_type`, `question_payload`) persisted in `messages` and
+  surfaced by `GET /api/channel/messages/{caregiver_id}`. No change
+  to the inbound shape, no change to existing clients that ignore
+  them (CONTRACTS §7 should document these in Stage 3's addendum).
+- Caregiver lessons endpoint response — `title` is now the localized
+  title (was always English); `title_en` is a new sibling field for
+  the English original. Added `status`. Legacy `has_pending_attempt`
+  retained for callers that still check it.
+- New endpoint `POST /api/channel/open-lesson` with body
+  `{caregiver_id, skill_id}` — public (no role gate on caregiver
+  surfaces).
+
+### Known deferrals (not in Stage 2 scope)
+
+- The agency Skills viewer / draft editor already render `${i+1}. ` on
+  the display side; nothing new needed. Any A/B/C letter leftovers in
+  copy that isn't the quiz-option render were not touched.
+
+
+
 ## Stage 1 fixups (2026-02-25)
 
 Tester surfaced 4 fixups + 1 side-effect to undo. Scope limited; no new
