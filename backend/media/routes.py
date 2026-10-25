@@ -68,6 +68,26 @@ async def upload_media(file: UploadFile = File(...)) -> dict:
     }
 
 
+@router.head("/{uuid_str}")
+async def head_media(uuid_str: str) -> Response:
+    """Size / content-type probe. Mirrors `GET`'s headers with an empty body.
+
+    iOS Safari and some players send `HEAD` before `GET`+`Range` to decide
+    whether to attempt streaming. Returning 405 here breaks that handshake.
+    """
+    store = get_media_store()
+    try:
+        info = await store.open(uuid_str)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="media not found")
+    headers = {
+        "Accept-Ranges": "bytes",
+        "Content-Length": str(info["length"]),
+        "Content-Disposition": f'inline; filename="{info["filename"]}"',
+    }
+    return Response(status_code=200, media_type=info["content_type"], headers=headers)
+
+
 @router.get("/{uuid_str}")
 async def get_media(uuid_str: str, request: Request):
     store = get_media_store()
