@@ -13,9 +13,10 @@ import logging
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 from db import get_db
+from roles import Role, require_role
 
 from .pipeline import regen_single_frame, utcnow_iso
 from .runner import kick_job, sweep_stale_jobs
@@ -25,6 +26,9 @@ from .translate import translate_language
 logger = logging.getLogger("firstshift.lessons.jobs")
 
 router = APIRouter()
+
+# Role gate — any write path on a lesson job is Care Manager + Trainer only.
+_JOB_WRITE_ROLE = require_role({Role.CARE_MANAGER, Role.TRAINER})
 
 # Fix #13 lazy edit — a job_id of the form `edit-{skill_id}` is a deterministic
 # edit "handle" that does NOT have a `lesson_jobs` row until the first save.
@@ -116,7 +120,7 @@ async def get_job(job_id: str) -> dict:
 
 
 @router.post("/jobs/{job_id}/retry")
-async def retry_job(job_id: str) -> dict:
+async def retry_job(job_id: str, _role: str = Depends(_JOB_WRITE_ROLE)) -> dict:
     db = get_db()
     doc = await db.lesson_jobs.find_one({"_id": job_id})
     if not doc:
@@ -139,7 +143,11 @@ async def retry_job(job_id: str) -> dict:
 
 
 @router.put("/jobs/{job_id}/draft")
-async def save_draft(job_id: str, body: dict) -> dict:
+async def save_draft(
+    job_id: str,
+    body: dict,
+    _role: str = Depends(_JOB_WRITE_ROLE),
+) -> dict:
     """Save editor changes, re-run validation, return problems.
 
     Fix #13 — if `job_id` is a lazy edit handle (`edit-{skill_id}`) and no
@@ -231,7 +239,11 @@ async def save_draft(job_id: str, body: dict) -> dict:
 
 
 @router.post("/jobs/{job_id}/steps/{n}/frame")
-async def regen_frame(job_id: str, n: int) -> dict:
+async def regen_frame(
+    job_id: str,
+    n: int,
+    _role: str = Depends(_JOB_WRITE_ROLE),
+) -> dict:
     db = get_db()
     doc = await db.lesson_jobs.find_one({"_id": job_id})
     skill_id = _edit_skill_id(job_id)
@@ -273,7 +285,7 @@ async def regen_frame(job_id: str, n: int) -> dict:
 
 
 @router.post("/jobs/{job_id}/publish")
-async def publish_job(job_id: str) -> dict:
+async def publish_job(job_id: str, _role: str = Depends(_JOB_WRITE_ROLE)) -> dict:
     """Idempotent publish. Atomic ready → publishing to prevent double-fire.
 
     Fix #13 — if `job_id` is a lazy edit handle with no `lesson_jobs` row

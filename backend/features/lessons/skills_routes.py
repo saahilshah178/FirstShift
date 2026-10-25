@@ -11,9 +11,10 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 from db import get_db
+from roles import Role, require_role
 
 from .pipeline import utcnow_iso
 from .translate import translate_language
@@ -21,6 +22,12 @@ from .translate import translate_language
 logger = logging.getLogger("firstshift.lessons.skills_routes")
 
 router = APIRouter()
+
+# Role gates:
+# - archive / unarchive: Care Manager only (destructive on the skill list).
+# - edit / translation writes: Care Manager + Trainer.
+_ARCHIVE_ROLE = require_role({Role.CARE_MANAGER})
+_EDIT_ROLE = require_role({Role.CARE_MANAGER, Role.TRAINER})
 
 
 def _normalise_lang(lang: str) -> str:
@@ -68,7 +75,7 @@ def _normalise_translation(t: Any) -> dict:
 
 
 @router.delete("/skills/{skill_id}")
-async def archive_skill(skill_id: str) -> dict:
+async def archive_skill(skill_id: str, _role: str = Depends(_ARCHIVE_ROLE)) -> dict:
     """Soft-delete: sets `archived: true` on the skill row.
 
     GET /skills excludes archived by default; GET /skills?include_archived=true
@@ -85,7 +92,7 @@ async def archive_skill(skill_id: str) -> dict:
 
 
 @router.post("/skills/{skill_id}/unarchive")
-async def unarchive_skill(skill_id: str) -> dict:
+async def unarchive_skill(skill_id: str, _role: str = Depends(_ARCHIVE_ROLE)) -> dict:
     """Reverse of the archive op (future UI surface)."""
     db = get_db()
     result = await db.skills.update_one(
@@ -98,7 +105,7 @@ async def unarchive_skill(skill_id: str) -> dict:
 
 
 @router.post("/skills/{skill_id}/edit")
-async def open_edit_job(skill_id: str) -> dict:
+async def open_edit_job(skill_id: str, _role: str = Depends(_EDIT_ROLE)) -> dict:
     """Lazy edit (Fix #13): return a deterministic `edit-{skill_id}` job_id
     WITHOUT inserting a `lesson_jobs` row. The first `PUT /jobs/{job_id}/draft`
     materialises the row (see `jobs.py::save_draft`). This stops the "I clicked
@@ -158,7 +165,12 @@ def _synth_edit_draft(skill: dict) -> dict:
 
 
 @router.put("/skills/{skill_id}/translations/{lang}")
-async def save_translation(skill_id: str, lang: str, body: dict) -> dict:
+async def save_translation(
+    skill_id: str,
+    lang: str,
+    body: dict,
+    _role: str = Depends(_EDIT_ROLE),
+) -> dict:
     """Save manager-edited translation text; status preserved (per spec)."""
     lang = _normalise_lang(lang)
     db = get_db()
@@ -231,7 +243,11 @@ def _apply_edited_translation(skill: dict, current: dict, body: dict) -> dict:
 
 
 @router.post("/skills/{skill_id}/translations/{lang}/review")
-async def review_translation(skill_id: str, lang: str) -> dict:
+async def review_translation(
+    skill_id: str,
+    lang: str,
+    _role: str = Depends(_EDIT_ROLE),
+) -> dict:
     lang = _normalise_lang(lang)
     db = get_db()
     skill = await db.skills.find_one({"_id": skill_id})
@@ -246,7 +262,7 @@ async def review_translation(skill_id: str, lang: str) -> dict:
 
 
 @router.post("/skills/{skill_id}/translations/retry")
-async def retry_translations(skill_id: str) -> dict:
+async def retry_translations(skill_id: str, _role: str = Depends(_EDIT_ROLE)) -> dict:
     """Re-run the translate pipeline for es+tl."""
     db = get_db()
     skill = await db.skills.find_one({"_id": skill_id})

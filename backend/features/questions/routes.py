@@ -6,16 +6,21 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
 from db import get_db
 from media.store import get_media_store
+from roles import Role, require_role
 
 from .pipeline import answer_question_async, deliver_owner_answer, transcribe_audio
 
 logger = logging.getLogger("firstshift.questions.routes")
 
 router = APIRouter()
+
+# Answer / transcribe / card creation are Care Manager only. The caregiver
+# `/ask` and `/inbox` read endpoints are open.
+_INBOX_WRITE_ROLE = require_role({Role.CARE_MANAGER})
 
 
 ACCEPTED_AUDIO_TYPES = {"audio/webm", "audio/mpeg", "audio/wav", "audio/aac", "audio/ogg"}
@@ -70,7 +75,11 @@ async def ask(body: dict) -> dict:
 
 # ---- answer (care manager types or submits transcript) ----
 @router.post("/{question_id}/answer")
-async def answer(question_id: str, body: dict) -> dict:
+async def answer(
+    question_id: str,
+    body: dict,
+    _role: str = Depends(_INBOX_WRITE_ROLE),
+) -> dict:
     text = str(body.get("text") or "").strip()
     if not text:
         raise HTTPException(status_code=422, detail="text required")
@@ -79,7 +88,10 @@ async def answer(question_id: str, body: dict) -> dict:
 
 # ---- voice transcribe ----
 @router.post("/transcribe")
-async def transcribe(file: UploadFile = File(...)) -> dict:
+async def transcribe(
+    file: UploadFile = File(...),
+    _role: str = Depends(_INBOX_WRITE_ROLE),
+) -> dict:
     content_type = (file.content_type or "").lower()
     if content_type not in ACCEPTED_AUDIO_TYPES:
         raise HTTPException(status_code=415, detail=f"Unsupported audio content-type: {content_type!r}")

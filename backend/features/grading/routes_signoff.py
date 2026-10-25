@@ -14,12 +14,16 @@ import uuid
 from datetime import datetime, timezone
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from db import get_db
+from roles import Role, require_role
 
 logger = logging.getLogger("firstshift.grading.signoff")
+
+# Signoff is the only gated action in this file — Care Manager only.
+_SIGNOFF_ROLE = require_role({Role.CARE_MANAGER})
 
 
 # ---- queue ----
@@ -266,7 +270,11 @@ def attach(router: APIRouter) -> None:
         return await _queue()
 
     @router.post("/attempts/{attempt_id}/signoff")
-    async def post_signoff(attempt_id: str, body: SignoffBody):
+    async def post_signoff(
+        attempt_id: str,
+        body: SignoffBody,
+        _role: str = Depends(_SIGNOFF_ROLE),
+    ):
         return await _signoff(attempt_id, body)
 
     @router.get("/competency/{caregiver_id}")
