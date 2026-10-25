@@ -144,6 +144,12 @@ input[type="submit"] {
     border-color: #e9c9c9;
     background: #f6e4e4;
 }
+.fs-chip-muted {
+    color: var(--fs-muted);
+    border-color: var(--fs-border);
+    background: transparent;
+    font-weight: 400;
+}
 
 /* Focus ring high enough for accessibility. */
 :focus-visible {

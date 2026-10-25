@@ -1,5 +1,88 @@
 # FirstShift — Changelog
 
+## Stage 2 fixups (2026-02-25)
+
+Tester-surfaced follow-ups to Stage 2. All 4 fixups shipped.
+
+### Items
+
+- **FIX 1 — Lessons row tap lands on `/c/{code}`, not 404.**
+  `frontend/src/features/lessons/CaregiverLessonsPage.js` navigated to
+  `/c/${code}/chat` but the route is `/c/:code` (see
+  `features/channel/routes.js`). Changed the navigate target to
+  `/c/${code}` exactly. Lessons-tap now lands in the chat with the
+  latest message being the step-0 lesson message (open-lesson
+  backend path verified via curl in Stage 2; the only breakage was
+  this frontend URL).
+
+- **FIX 2 — "Not started" chip renders for `todo` rows.** Added a
+  localized label for every `status` ∈ `{cleared, awaiting_signoff,
+  practice_video_next, in_progress, todo}` and a new muted chip
+  style `.fs-chip-muted` (no fill, border-only, lower font weight).
+  Shipped on both `CaregiverLessonsPage.js` (Item F) and
+  `features/grading/PracticePage.js` (Item G). Every row now shows a
+  chip; no row is silent.
+
+- **FIX 3 — `replace_source_video` returns 4xx instead of 500 on bad
+  uploads.** Two causes:
+  1. The pod no longer had `ffmpeg` in `/usr/bin` after a restart —
+     apt packages aren't persistent. Installed a static ffmpeg +
+     ffprobe at `/root/.local/bin` (which IS persistent) and
+     prepended that path to `os.environ["PATH"]` in `backend/server.py`
+     so subprocess children inherit it even when supervisor's
+     `environment=` directive trims PATH.
+  2. The endpoint catches `EncodeError` → 415 (correct) but let any
+     OTHER exception bubble as a bare 500. Added two more arms:
+     `FileNotFoundError` → 503 "ffmpeg not available on server"
+     (infra problem — distinct 5xx), and any other `Exception` →
+     415 "cannot decode video: <first line of error>" so bad
+     uploads surface as 4xx. Verified via curl: POSTing
+     `/tmp/bad.txt` with `type=video/mp4` → HTTP **415** with
+     `{"detail":"ffmpeg CRF pass failed: Invalid data found when
+     processing input..."}`.
+  (The 413 oversize path from Stage 1 is unchanged. The 415
+  "file-too-short-for-step-timestamp" path from the frame-extract
+  loop is also unchanged.)
+
+- **FIX 4 — Dev reset endpoint for caregiver conversation.**
+  `POST /api/channel/dev/reset/{caregiver_id}` sets conversation
+  `state: "idle"`, clears `greeted`, `skill_id`, `step_index`,
+  `quiz_index`, `correct_count`. **Messages are preserved** so
+  testers still see history. Gated on `X-Firstshift-Role: Care
+  Manager` via the shared `require_role` dependency: role missing →
+  403 `{reason: "role_required", allowed: ["Care Manager"]}`;
+  Scheduler / Trainer → 403 `{reason: "role_not_allowed", role: ...,
+  allowed: ["Care Manager"]}`; Care Manager → 200 with modified
+  count. Verified end-to-end:
+
+```
+curl -X POST $API/api/channel/dev/reset/<caregiver_id>                                          → 403 role_required
+curl -X POST $API/api/channel/dev/reset/<caregiver_id> -H "X-Firstshift-Role: Scheduler"        → 403 role_not_allowed
+curl -X POST $API/api/channel/dev/reset/<caregiver_id> -H "X-Firstshift-Role: Care Manager"     → 200 {"ok":true,...}
+```
+
+### Files touched
+
+```
+M  backend/server.py                                            (prepend /root/.local/bin to PATH so static ffmpeg is reachable)
+M  backend/features/channel/routes.py                            (POST /dev/reset/{id} + role gate)
+M  backend/features/lessons/skills_routes.py                     (415 catchall + 503 for ffmpeg missing)
+M  frontend/src/App.css                                          (.fs-chip-muted)
+M  frontend/src/features/lessons/CaregiverLessonsPage.js         (navigate /c/${code} + "Not started" chip)
+M  frontend/src/features/grading/PracticePage.js                 ("Not started" chip)
+M  docs/CHANGELOG.md
+```
+
+### Infra note (static ffmpeg)
+
+Static arm64 ffmpeg 7.0.2 from `johnvansickle.com/ffmpeg` is
+installed at `/root/.local/bin/{ffmpeg,ffprobe}` (~100 MB total).
+Survives pod restarts; the apt package does not. Nothing else to do
+on fresh pods except `cd /app && git pull` — the PATH prepend in
+`backend/server.py` picks it up automatically.
+
+
+
 ## Stage 2 — Caregiver chat fixes (2026-02-25)
 
 Chat FSM + caregiver surface fixes. Everything stays inside the

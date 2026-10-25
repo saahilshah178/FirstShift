@@ -21,6 +21,14 @@ from starlette.middleware.cors import CORSMiddleware
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
 
+# Make the static ffmpeg + ffprobe at `/root/.local/bin` discoverable even
+# when supervisor's `environment=` directive drops the user PATH. The pod
+# does NOT ship with ffmpeg in `/usr/bin` across restarts (apt packages
+# don't persist); the static binary at `/root/.local/bin` does.
+_STATIC_FFMPEG_DIR = "/root/.local/bin"
+if _STATIC_FFMPEG_DIR not in os.environ.get("PATH", "").split(":"):
+    os.environ["PATH"] = f"{_STATIC_FFMPEG_DIR}:{os.environ.get('PATH', '')}"
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",

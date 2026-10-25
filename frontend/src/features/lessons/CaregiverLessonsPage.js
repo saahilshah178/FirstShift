@@ -4,31 +4,36 @@ import { api } from "@/api";
 import { useCaregiver } from "@/shell/CaregiverLayout";
 
 /* Status chip labels per language, keyed by the `status` string the
-   /api/lessons/caregiver endpoint returns. "todo" renders no chip. */
+   /api/lessons/caregiver endpoint returns. Every status (including
+   `todo`) has a label; the chip is always rendered. */
 const CHIP_LABELS = {
   en: {
     cleared: "Cleared",
     awaiting_signoff: "Waiting for sign-off",
     practice_video_next: "Practice video next",
     in_progress: "In progress",
+    todo: "Not started",
   },
   es: {
     cleared: "Aprobado",
     awaiting_signoff: "Esperando firma",
     practice_video_next: "Falta el video",
     in_progress: "En progreso",
+    todo: "Sin comenzar",
   },
   tl: {
     cleared: "Natapos na",
     awaiting_signoff: "Hinihintay ang sign-off",
     practice_video_next: "Susunod ang practice video",
     in_progress: "Kasalukuyang ginagawa",
+    todo: "Hindi pa nasimulan",
   },
 };
 
 function chipClass(status) {
   if (status === "cleared") return "fs-chip-pass";
   if (status === "awaiting_signoff" || status === "practice_video_next") return "fs-chip-warn";
+  if (status === "todo") return "fs-chip-muted";
   return "";
 }
 
@@ -84,7 +89,9 @@ export default function CaregiverLessonsPage() {
         caregiver_id: caregiver.id,
         skill_id: skillId,
       });
-      navigate(`/c/${code}/chat`);
+      // Caregiver chat route is `/c/:code` (no `/chat` subpath) — see
+      // backend/features/channel/routes.js.
+      navigate(`/c/${code}`);
     } catch (e) {
       const detail = e?.response?.data?.detail;
       setOpenErr(typeof detail === "string" ? detail : e?.message || "failed");

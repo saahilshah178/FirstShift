@@ -7,31 +7,36 @@ const MAX_DURATION = 45;
 const MIN_DURATION = 3;
 
 /* Stage 2 — status chip labels per language. Same source of truth agency
-   uses (/api/lessons/caregiver). "todo" renders no chip. */
+   uses (/api/lessons/caregiver). Every status is labelled (`todo` renders
+   a muted "Not started" chip; see fixups). */
 const CHIP_LABELS = {
   en: {
     cleared: "Cleared",
     awaiting_signoff: "Waiting for sign-off",
     practice_video_next: "Practice video next",
     in_progress: "In progress",
+    todo: "Not started",
   },
   es: {
     cleared: "Aprobado",
     awaiting_signoff: "Esperando firma",
     practice_video_next: "Falta el video",
     in_progress: "En progreso",
+    todo: "Sin comenzar",
   },
   tl: {
     cleared: "Natapos na",
     awaiting_signoff: "Hinihintay ang sign-off",
     practice_video_next: "Susunod ang practice video",
     in_progress: "Kasalukuyang ginagawa",
+    todo: "Hindi pa nasimulan",
   },
 };
 
 function chipClass(status) {
   if (status === "cleared") return "fs-chip-pass";
   if (status === "awaiting_signoff" || status === "practice_video_next") return "fs-chip-warn";
+  if (status === "todo") return "fs-chip-muted";
   return "";
 }
 

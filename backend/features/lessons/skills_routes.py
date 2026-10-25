@@ -375,6 +375,25 @@ async def replace_source_video(
             await encode_mp4(src, dst)
         except EncodeError as exc:
             raise HTTPException(status_code=415, detail=str(exc)) from exc
+        except FileNotFoundError as exc:
+            # ffmpeg itself missing (e.g. pod booted without the static binary).
+            # Surface as 503 so the caller knows it's an infra problem, not
+            # a bad upload. The 500 the tester saw was this path.
+            logger.exception("replace_source_video: ffmpeg not found")
+            raise HTTPException(
+                status_code=503,
+                detail="ffmpeg not available on server",
+            ) from exc
+        except Exception as exc:
+            # Any other decode / probe / IO issue is treated as "unsupported
+            # media type" with the first line of the error so the client
+            # sees a 4xx with a hint instead of a bare 500. The brief says
+            # bad-video → 4xx, not 5xx.
+            logger.exception("replace_source_video: unexpected encode failure")
+            raise HTTPException(
+                status_code=415,
+                detail=f"cannot decode video: {str(exc).splitlines()[0][:200]}",
+            ) from exc
 
         video_bytes = dst.read_bytes()
         video_id = await store.save(
