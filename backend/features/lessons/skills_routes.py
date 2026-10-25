@@ -9,7 +9,6 @@
 from __future__ import annotations
 
 import logging
-import uuid
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -100,14 +99,32 @@ async def unarchive_skill(skill_id: str) -> dict:
 
 @router.post("/skills/{skill_id}/edit")
 async def open_edit_job(skill_id: str) -> dict:
-    """Copy a published skill into a new draft job (no re-analysis)."""
+    """Lazy edit (Fix #13): return a deterministic `edit-{skill_id}` job_id
+    WITHOUT inserting a `lesson_jobs` row. The first `PUT /jobs/{job_id}/draft`
+    materialises the row (see `jobs.py::save_draft`). This stops the "I clicked
+    Edit three times" drafts drawer from accumulating junk.
+
+    404 if the skill does not exist. Idempotent across repeated clicks and
+    across users (same skill_id → same job_id → same resumable editor).
+    """
     db = get_db()
-    skill = await db.skills.find_one({"_id": skill_id})
+    skill = await db.skills.find_one({"_id": skill_id}, {"_id": 1})
     if not skill:
         raise HTTPException(status_code=404, detail="skill not found")
+    return {"job_id": f"edit-{skill_id}"}
 
-    job_id = uuid.uuid4().hex
-    draft = {
+
+def _max_end_time(draft: dict) -> float:
+    out = 0.0
+    for s in draft.get("steps") or []:
+        out = max(out, float(s.get("end") or 0.0))
+    return round(out, 2)
+
+
+def _synth_edit_draft(skill: dict) -> dict:
+    """Shape a published skill into the lesson_jobs.draft shape so the editor
+    can render it even before any row exists in the DB."""
+    return {
         "title": skill.get("title") or "",
         "steps": [
             {
@@ -138,31 +155,6 @@ async def open_edit_job(skill_id: str) -> dict:
             for q in (skill.get("quiz") or [])
         ],
     }
-    duration_s = _max_end_time(draft)
-    doc = {
-        "_id": job_id,
-        "status": "ready",
-        "error": "",
-        "video_id": skill.get("video_id"),
-        "source_credit": skill.get("source_credit") or "",
-        "skill_id": skill_id,  # link so publish updates (version+1)
-        "duration_s": duration_s,
-        "draft": draft,
-        "problems": [],
-        "draft_rev": 0,
-        "heartbeat_at": utcnow_iso(),
-        "created_at": utcnow_iso(),
-        "updated_at": utcnow_iso(),
-    }
-    await db.lesson_jobs.insert_one(doc)
-    return {"job_id": job_id}
-
-
-def _max_end_time(draft: dict) -> float:
-    out = 0.0
-    for s in draft.get("steps") or []:
-        out = max(out, float(s.get("end") or 0.0))
-    return round(out, 2)
 
 
 @router.put("/skills/{skill_id}/translations/{lang}")

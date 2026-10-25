@@ -26,6 +26,42 @@ logger = logging.getLogger("firstshift.lessons.jobs")
 
 router = APIRouter()
 
+# Fix #13 lazy edit — a job_id of the form `edit-{skill_id}` is a deterministic
+# edit "handle" that does NOT have a `lesson_jobs` row until the first save.
+EDIT_PREFIX = "edit-"
+
+
+def _edit_skill_id(job_id: str) -> str | None:
+    """Return the underlying skill_id if `job_id` is a lazy edit handle."""
+    if isinstance(job_id, str) and job_id.startswith(EDIT_PREFIX):
+        return job_id[len(EDIT_PREFIX):]
+    return None
+
+
+def _synth_job_from_skill(job_id: str, skill: dict) -> dict:
+    """Build an in-memory job doc from a published skill (no DB insert)."""
+    from .skills_routes import _synth_edit_draft  # avoid cycle at import time
+
+    draft = _synth_edit_draft(skill)
+    duration_s = 0.0
+    for s in draft.get("steps") or []:
+        duration_s = max(duration_s, float(s.get("end") or 0.0))
+    return {
+        "_id": job_id,
+        "status": "ready",
+        "error": "",
+        "video_id": skill.get("video_id"),
+        "source_credit": skill.get("source_credit") or "",
+        "skill_id": skill["_id"],
+        "duration_s": round(duration_s, 2),
+        "draft": draft,
+        "problems": [],
+        "draft_rev": 0,
+        "heartbeat_at": utcnow_iso(),
+        "created_at": utcnow_iso(),
+        "updated_at": utcnow_iso(),
+    }
+
 
 def _job_public(doc: dict) -> dict:
     return {
@@ -61,9 +97,22 @@ async def get_job(job_id: str) -> dict:
     await sweep_stale_jobs()  # lazy sweep
     db = get_db()
     doc = await db.lesson_jobs.find_one({"_id": job_id})
-    if not doc:
-        raise HTTPException(status_code=404, detail="job not found")
-    return _job_public(doc)
+    # Fix #13 — a lazy edit handle (`edit-{skill_id}`) always presents a
+    # fresh editor view. If a prior session finished at `published`, that
+    # row is a terminal breadcrumb; synthesize a new virgin draft from the
+    # current skill so the next Edit click starts clean (no "already
+    # published" dead-ends in the UI).
+    skill_id = _edit_skill_id(job_id)
+    if doc and skill_id and doc.get("status") == "published":
+        doc = None
+    if doc:
+        return _job_public(doc)
+    if skill_id:
+        skill = await db.skills.find_one({"_id": skill_id})
+        if not skill:
+            raise HTTPException(status_code=404, detail="skill not found")
+        return _job_public(_synth_job_from_skill(job_id, skill))
+    raise HTTPException(status_code=404, detail="job not found")
 
 
 @router.post("/jobs/{job_id}/retry")
@@ -91,11 +140,31 @@ async def retry_job(job_id: str) -> dict:
 
 @router.put("/jobs/{job_id}/draft")
 async def save_draft(job_id: str, body: dict) -> dict:
-    """Save editor changes, re-run validation, return problems."""
+    """Save editor changes, re-run validation, return problems.
+
+    Fix #13 — if `job_id` is a lazy edit handle (`edit-{skill_id}`) and no
+    `lesson_jobs` row exists yet (or the only row is a terminal `published`
+    breadcrumb from a prior session), materialise a fresh one using the
+    published skill as the base. All subsequent saves update normally.
+    """
     db = get_db()
     doc = await db.lesson_jobs.find_one({"_id": job_id})
+    skill_id = _edit_skill_id(job_id)
+    if doc and skill_id and doc.get("status") == "published":
+        # Replace the terminal breadcrumb with a virgin edit row.
+        await db.lesson_jobs.delete_one({"_id": job_id})
+        doc = None
     if not doc:
-        raise HTTPException(status_code=404, detail="job not found")
+        if not skill_id:
+            raise HTTPException(status_code=404, detail="job not found")
+        skill = await db.skills.find_one({"_id": skill_id})
+        if not skill:
+            raise HTTPException(status_code=404, detail="skill not found")
+        if int(body.get("draft_rev") or 0) != 0:
+            raise HTTPException(status_code=409, detail="draft_rev stale (job not yet created; expected 0)")
+        synth = _synth_job_from_skill(job_id, skill)
+        await db.lesson_jobs.insert_one(synth)
+        doc = synth
     if doc.get("status") == "published":
         raise HTTPException(status_code=409, detail="published; use /skills/{id}/edit")
 
@@ -165,8 +234,20 @@ async def save_draft(job_id: str, body: dict) -> dict:
 async def regen_frame(job_id: str, n: int) -> dict:
     db = get_db()
     doc = await db.lesson_jobs.find_one({"_id": job_id})
+    skill_id = _edit_skill_id(job_id)
+    if doc and skill_id and doc.get("status") == "published":
+        await db.lesson_jobs.delete_one({"_id": job_id})
+        doc = None
     if not doc:
-        raise HTTPException(status_code=404, detail="job not found")
+        # Fix #13 — same lazy materialisation story as save_draft.
+        if not skill_id:
+            raise HTTPException(status_code=404, detail="job not found")
+        skill = await db.skills.find_one({"_id": skill_id})
+        if not skill:
+            raise HTTPException(status_code=404, detail="skill not found")
+        synth = _synth_job_from_skill(job_id, skill)
+        await db.lesson_jobs.insert_one(synth)
+        doc = synth
     if not doc.get("video_id"):
         raise HTTPException(status_code=409, detail="no video to extract from yet")
     steps = (doc.get("draft") or {}).get("steps") or []
@@ -193,9 +274,24 @@ async def regen_frame(job_id: str, n: int) -> dict:
 
 @router.post("/jobs/{job_id}/publish")
 async def publish_job(job_id: str) -> dict:
-    """Idempotent publish. Atomic ready → publishing to prevent double-fire."""
+    """Idempotent publish. Atomic ready → publishing to prevent double-fire.
+
+    Fix #13 — if `job_id` is a lazy edit handle with no `lesson_jobs` row
+    yet (i.e. the user clicked Edit but changed nothing), reject with 422
+    rather than publishing a vacuous version bump. The "already published"
+    breadcrumb for a lazy handle counts the same way — nothing new to publish.
+    """
     db = get_db()
     doc = await db.lesson_jobs.find_one({"_id": job_id})
+    skill_id = _edit_skill_id(job_id)
+    if (
+        skill_id
+        and (not doc or doc.get("status") == "published")
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail={"reasons": ["No changes to publish — edit something first."]},
+        )
     if not doc:
         raise HTTPException(status_code=404, detail="job not found")
 
@@ -305,8 +401,14 @@ async def publish_job(job_id: str) -> dict:
             "checks": english["checks"],
             "quiz": english["quiz"],
             "version": next_version,
-            "source_credit": doc.get("source_credit") or "",
-            "video_id": doc.get("video_id"),
+            # Fix #13 — source_credit preservation: if the draft/editor
+            # left it blank, keep whatever the previously-published skill
+            # had rather than silently clearing it.
+            "source_credit": (
+                (doc.get("source_credit") or "").strip()
+                or ((existing_skill or {}).get("source_credit") or "")
+            ),
+            "video_id": doc.get("video_id") or (existing_skill or {}).get("video_id"),
             "translations": translations_out,
         }
         await db.skills.replace_one({"_id": skill_id}, skill_doc, upsert=True)
@@ -321,6 +423,18 @@ async def publish_job(job_id: str) -> dict:
                 "heartbeat_at": utcnow_iso(),
             }, "$inc": {"draft_rev": 1}},
         )
+        # Fix #13 — after a successful publish, drop ALL draft rows that
+        # target this skill_id, including the one that just published.
+        # Rationale: the published skill IS the audit trail; the editor is
+        # a lazy handle (`edit-{skill_id}`) that should start virgin on the
+        # next click. Rows with status `published` for OTHER skill_ids are
+        # untouched (that's unrelated history).
+        wipe = await db.lesson_jobs.delete_many({"skill_id": skill_id})
+        if wipe.deleted_count > 1:
+            logger.info(
+                "publish %s: wiped %d draft row(s) for skill %s (self + siblings)",
+                job_id, wipe.deleted_count, skill_id,
+            )
         return {"skill_id": skill_id, "version": next_version}
     except HTTPException:
         raise
@@ -341,7 +455,12 @@ async def publish_job(job_id: str) -> dict:
 
 
 def _publish_blockers(doc: dict) -> list[str]:
-    """Return human reasons that block publish; empty when it's safe."""
+    """Return human reasons that block publish; empty when it's safe.
+
+    Fix #10 — quiz count is now unconstrained (0..N allowed). Each
+    quiz question that IS present still needs 3 valid choices and a
+    valid answer index (0..2).
+    """
     reasons: list[str] = []
     draft = doc.get("draft") or {}
     steps = draft.get("steps") or []
@@ -355,17 +474,14 @@ def _publish_blockers(doc: dict) -> list[str]:
             break
     if not checks:
         reasons.append("At least one check is required.")
-    if len(quiz) != 2:
-        reasons.append("Quiz must have exactly 2 questions.")
-    else:
-        for q in quiz:
-            if len(q.get("choices") or []) != 3:
-                reasons.append("Each quiz question needs 3 choices.")
-                break
-            ai = q.get("answer_index")
-            if not isinstance(ai, int) or ai < 0 or ai > 2:
-                reasons.append("Each quiz question needs a valid correct answer (0..2).")
-                break
+    for q in quiz:
+        if len(q.get("choices") or []) != 3:
+            reasons.append("Each quiz question needs 3 choices.")
+            break
+        ai = q.get("answer_index")
+        if not isinstance(ai, int) or ai < 0 or ai > 2:
+            reasons.append("Each quiz question needs a valid correct answer (1..3).")
+            break
     # Any blocking problems from the draft itself.
     for p in blocking_problems(doc.get("problems") or []):
         reasons.append(f"{p.get('where')}: {p.get('message')}")
