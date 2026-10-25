@@ -305,6 +305,171 @@ Three required fixes + one cleanup folded into a single tightening commit:
     signoffs / cleared_skills referenced it); the canonical Glove row
     now carries the `source` marker so the next restart is a no-op.
 
+### Batch 4 — UX polish (#18 – #26)
+
+Pre-batch cleanup folded into the first commit of the batch:
+
+- Deleted Alex Johnson's `text="test"` tester question from
+  `questions`; the only tester-leftover lesson_jobs row and upload
+  session were already gone (verified via DB inspection — nothing
+  staging under `/tmp/lessons/` and `lesson_jobs` was empty).
+
+Fixes:
+
+- **#19 — Chat UX pass.**
+  - `frontend/src/features/channel/ChatPage.js`:
+    - Autoscroll now fires only when a NEW message arrives (keyed on
+      the last message's id/_id/at, kept in `lastMessageIdRef`),
+      instead of on every poll-driven re-render. Users reading history
+      no longer get yanked back to the bottom every 2 s.
+    - After `sendText()` (incl. quick-reply taps), the composer textarea
+      is re-focused via `inputRef.current.focus({ preventScroll: true })`
+      so repeated quick-reply + typing feels like one continuous turn.
+    - `quickReplies` already returned `[]` for non-{idle,quiz,in_lesson}
+      states (prior Batch-2 work); documented inline.
+
+- **#18 / #22 partial — Questions panel polish.**
+  - Owner-inbox poll backed off from 3 s → 10 s. Picking a row still
+    shows the detail immediately (no extra fetch).
+  - Grid template `md:grid-cols-[22rem_1fr]` → `md:grid-cols-[22rem_minmax(0,1fr)]`
+    so the detail column can shrink inside its grid cell (fixes
+    long-URL / no-space answer overflow).
+  - Detail `<article>` gains `min-w-0 break-words`; question-text
+    paragraph also `break-words`.
+  - `"Answered (owner)"` → `"Answered by Care Manager"` via a
+    `sourceLabel()` map (`owner → Care Manager`, `gemini → AI`,
+    falls through for anything unknown).
+
+- **#20 — Lessons polish.**
+  - **Practice list card spacing** (`features/grading/PracticePage.js`):
+    `py-3` → `py-4`, title `leading-snug`, `justify-between gap-4`,
+    `whitespace-nowrap` on the step count. Rows no longer wrap or
+    collide with the step count on narrow mobile.
+  - **"to do" chip clears correctly on Caregiver Lessons page**
+    (`features/lessons/CaregiverLessonsPage.js`): backend
+    `/api/lessons/caregiver/{id}` now returns `has_pending_attempt`
+    per remaining skill (any unreviewed attempt with status in
+    `{ready_to_sign, needs_practice}`). When set, the chip reads
+    `awaiting sign-off` (warn tone) instead of plain `to do`, so
+    caregivers see the state transition after they finish steps +
+    quiz + their attempt recording.
+  - Source credit was already shown on the published skill page
+    header line (version · credit). No change — regression-check
+    passed.
+
+- **#21 — Per-step reference-video playback.**
+  - `features/lessons/SkillDetailPage.js::EnglishView`: when the skill
+    has a `video_id`, a `<video controls playsInline preload="metadata">`
+    renders above the Steps list.
+  - Each step's frame thumbnail becomes a `<button>` with a translucent
+    `▶` overlay; clicking it does `video.currentTime = step.start`,
+    `video.play()`, and scrolls the player into view. Test-ids
+    `skill-en-step-play-${n}` and `skill-en-step-range-${n}`.
+  - Step rows also surface the `{start}s – {end}s` range in a muted
+    subline so authors / Care Managers see which part of the clip the
+    step covers — relies on the Batch-2 ffprobe-backfilled timestamps.
+  - When no `video_id` is present, the step row keeps the plain
+    frame image (no play button, no range line).
+
+- **#22 — Flag glyphs → language names + Spanish `tú` consistency.**
+  - `frontend/src/shell/CaregiverLayout.js`: swapped the `🇺🇸/🇪🇸/🇵🇭`
+    glyph for a muted-chip language label (`English` / `Español` /
+    `Tagalog`). Readable aloud by screen readers; survives in
+    browsers / OSes that don't render regional-indicator pairs as a
+    flag; and matches the global copy convention. New test-id
+    `caregiver-language`.
+  - Audited every Spanish string in backend sources (`backend/`) and
+    frontend copy: all existing ones already use `tú` / singular
+    `administradora de cuidados`; no `usted`, no plural, and no
+    `"la aplicación FirstShift"` references found. Added a pinning
+    comment at `backend/features/questions/pipeline.py` so future
+    fallbacks keep the convention.
+
+- **#23 — Tagalog quiz ✓.**
+  - Verified `SkillDetailPage.js` renders `✓` next to the correct
+    option in both English and Translation views (line
+    `{\`${i + 1}. ${o}\`}{q.answer_index === i ? " ✓" : ""}`). The
+    ✓ glyph is a pure UI marker (not part of the translated string),
+    so it survives language switching. No code change needed; copy
+    pass noted in merge notes.
+
+- **#24 — a11y + nav polish.**
+  - **CaregiverPicker modal**:
+    - `Escape` closes the modal via a scoped `window.keydown` listener
+      that unmounts with the dialog.
+    - Click on the backdrop closes too (click-on-inner-card is
+      filtered via `e.target === e.currentTarget`).
+    - `aria-labelledby="caregiver-picker-title"` + explicit
+      `aria-label="Close caregiver picker"` on the X button
+      (replaces the plain `aria-label="Close"` for a clearer screen
+      reader message); X icon marked `aria-hidden`.
+  - **Skill rows (SkillsPage)**: the whole `<li>` is now a `<Link>`
+    (not just the title). The step/check counts are inside the link,
+    so caregivers can tap anywhere on the card. Preserves the
+    `skill-link-${id}` test-id and adds `skills-row-${id}` on the li.
+  - **Lowercase `/c/<code>` → uppercase**: `CaregiverLayout` detects
+    `code !== code.toUpperCase()` and `navigate(... replace=true)` to
+    the canonical uppercase URL, preserving any sub-path, query
+    string and hash. The by-code lookup then runs with the canonical
+    form.
+  - **Code-not-found hides "Back to agency"**: the 404 state used to
+    render a `Back to agency` button that navigated to `/`. Caregivers
+    (the target audience when a bad code is typed) must not see the
+    agency app; agency staff who land here from the picker can use
+    the browser back button. Replaced the button with a one-line
+    "check with your care manager" instruction.
+
+- **#25 — Double-fetch audit.**
+  - Audited every `useEffect` + `api.get`/`post`/`put` call site
+    across `frontend/src/features/`. **Zero prod-time double-fetches
+    found.** The patterns we have are all one of:
+    1. `useEffect(load, [load])` where `load` is `useCallback`/`useMemo`
+       with a stable deps list (initial mount → one fetch).
+    2. Paired initial `useEffect(load, [load])` + polling
+       `useEffect(setInterval(load, N), [load])` (initial mount →
+       one fetch + one interval, no race).
+    3. `CaregiverLayout` already deduped with `AbortController` since
+       Phase 2 — kept.
+  - In dev (CRA `yarn start`), `<React.StrictMode>` double-invokes
+    every effect once at mount for intentional-side-effect detection.
+    That is a DEV-only artifact and has no effect on the production
+    bundle (what tester + preview URL serve). Documented here so
+    reviewers who grep for `api.get` + `useEffect` and count the
+    network tab in `yarn start` aren't surprised.
+  - No changes needed to any component.
+
+- **#26 — Bed-to-chair content pass (Transfer skill v6).**
+  - Via the Batch-2 edit→publish round-trip (POST
+    `/skills/{id}/edit` → PUT `/draft` → POST `/publish`, as
+    Care Manager):
+    - **c4 safety-critical flipped off**: "The caregiver places feet
+      directly in front of patient's feet" is not a safety check in
+      the ADL-training sense; it's a technique note. The three real
+      safety checks are now c1 (gait belt), c3 (brakes locked), and
+      the new c6 below. Over-tagging dilutes the signal.
+    - **"Nurse" → "The caregiver"**: c4 now reads "The caregiver
+      places feet directly in front of patient's feet to prevent
+      slipping." Matches the role language the rest of the app uses
+      and keeps the Spanish/Tagalog translators from re-coining a
+      different occupational title each pass.
+    - **New c6 (safety-critical)**: "Non-skid footwear is on the
+      patient before they stand." Explicitly flagged
+      `safety_critical: true`. Translations landed in the same
+      publish:
+        - es: "El paciente lleva calzado antideslizante antes de
+          ponerse de pie."
+        - tl: "Nakasuot ang sapatos o medyas na hindi nadudulas sa
+          pasyente bago sila tumayo."
+    - Final safety set: **c1 gait belt + c3 brakes + c6 non-skid
+      footwear**. c2, c4, c5 are technique checks (not safety).
+    - Transfer skill at **version 6**; attempts still reference the
+      original check IDs c1–c5 (no renaming — Batch-2 TWEAK-B rule).
+      c6 is a new ID and only appears in future attempts.
+  - Steps 1–5 already included the actual transfer step
+    ("Transfer Patient to Wheelchair" at step 4) and timestamps
+    were backfilled in Batch-2 FIX B. No step-level content change
+    needed.
+
 ### Batch 3 — Role switch functional gating (#15 / #16 / #17)
 
 > **Not real auth.** The frontend sends `X-Firstshift-Role` from a
