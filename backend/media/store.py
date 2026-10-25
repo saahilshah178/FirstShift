@@ -20,7 +20,11 @@ class MediaStore:
 
     Public interface:
         - save(file_bytes, content_type, filename=None) -> uuid_str
-        - get(uuid_str) -> (async_stream, content_type, filename)
+        - get(uuid_str) -> (async_stream, content_type, filename)        [legacy]
+        - open(uuid_str) -> {gridfs_id, length, content_type, filename}
+        - read_full(info)             -> async bytes iterator
+        - read_range(info, start, end)-> async bytes iterator (inclusive end)
+        - replace_blob(uuid_str, new_bytes, content_type?, filename?)
     """
 
     def __init__(self, bucket: AsyncIOMotorGridFSBucket):
@@ -41,34 +45,115 @@ class MediaStore:
         )
         return uid
 
-    async def get(self, uuid_str: str) -> tuple[AsyncIterator[bytes], str, str]:
-        """Return (chunk-iterator, content_type, filename). 404 if missing."""
+    async def open(self, uuid_str: str) -> dict:
+        """Return `{gridfs_id, length, content_type, filename}` for `uuid_str`.
+        Raises `FileNotFoundError` when the media is not present."""
         cursor = self._bucket.find({"metadata.uuid": uuid_str}).limit(1)
         docs = await cursor.to_list(length=1)
         if not docs:
             raise FileNotFoundError(uuid_str)
         doc = docs[0]
-        stream = await self._bucket.open_download_stream(doc["_id"])
-        content_type = (doc.get("metadata") or {}).get(
-            "content_type", "application/octet-stream"
+        return {
+            "gridfs_id": doc["_id"],
+            "length": int(doc.get("length") or 0),
+            "content_type": (doc.get("metadata") or {}).get(
+                "content_type", "application/octet-stream"
+            ),
+            "filename": doc.get("filename") or uuid_str,
+        }
+
+    async def read_full(self, info: dict) -> AsyncIterator[bytes]:
+        """Yield the entire blob, chunk by chunk."""
+        stream = await self._bucket.open_download_stream(info["gridfs_id"])
+        try:
+            while True:
+                chunk = await stream.readchunk()
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            close = getattr(stream, "close", None)
+            if close is not None:
+                result = close()
+                if hasattr(result, "__await__"):
+                    await result
+
+    async def read_range(
+        self,
+        info: dict,
+        start: int,
+        end: int,
+    ) -> AsyncIterator[bytes]:
+        """Yield bytes for the inclusive range `[start, end]`.
+
+        Uses forward-skip through the gridfs chunks (255 KB default), which is
+        correct but reads up to `start` bytes of data before yielding. For the
+        file sizes we handle (≤18 MB after lessons transcode, ≤50 MB upload cap)
+        the extra I/O is negligible on local disk; swapping to the native
+        `stream.seek(start)` call is a future optimisation if it becomes a hot
+        path.
+        """
+        stream = await self._bucket.open_download_stream(info["gridfs_id"])
+        try:
+            pos = 0
+            remaining = end - start + 1
+            while remaining > 0:
+                chunk = await stream.readchunk()
+                if not chunk:
+                    break
+                clen = len(chunk)
+                if pos + clen <= start:
+                    pos += clen
+                    continue
+                offset_in_chunk = max(0, start - pos)
+                take_end = min(clen, offset_in_chunk + remaining)
+                piece = chunk[offset_in_chunk:take_end]
+                if piece:
+                    yield piece
+                    remaining -= len(piece)
+                pos += clen
+        finally:
+            close = getattr(stream, "close", None)
+            if close is not None:
+                result = close()
+                if hasattr(result, "__await__"):
+                    await result
+
+    async def replace_blob(
+        self,
+        uuid_str: str,
+        new_bytes: bytes,
+        *,
+        content_type: str | None = None,
+        filename: str | None = None,
+    ) -> None:
+        """Replace the raw bytes behind `uuid_str` while keeping the public id.
+
+        Used by `scripts/faststart_backfill.py` to re-encode existing videos
+        in-place. Internally deletes the old gridfs file and uploads a new one
+        with the same metadata uuid.
+        """
+        info = await self.open(uuid_str)
+        await self._bucket.delete(info["gridfs_id"])
+        meta = {
+            "uuid": uuid_str,
+            "content_type": content_type or info["content_type"],
+        }
+        await self._bucket.upload_from_stream(
+            filename or info["filename"],
+            new_bytes,
+            metadata=meta,
         )
-        filename = doc.get("filename") or uuid_str
+
+    async def get(self, uuid_str: str) -> tuple[AsyncIterator[bytes], str, str]:
+        """Legacy entry point. Returns `(iterator, content_type, filename)`."""
+        info = await self.open(uuid_str)
 
         async def _iter() -> AsyncIterator[bytes]:
-            try:
-                while True:
-                    chunk = await stream.readchunk()
-                    if not chunk:
-                        break
-                    yield chunk
-            finally:
-                close = getattr(stream, "close", None)
-                if close is not None:
-                    result = close()
-                    if hasattr(result, "__await__"):
-                        await result
+            async for piece in self.read_full(info):
+                yield piece
 
-        return _iter(), content_type, filename
+        return _iter(), info["content_type"], info["filename"]
 
 
 # ---- Module singleton bound to the app's Mongo DB ----
