@@ -6,6 +6,8 @@ export default function CompetencyPage() {
   const [state, setState] = useState({ status: "loading" });
 
   useEffect(() => {
+    // Stage 4-G: shared GET dedupe in api.js collapses the StrictMode
+    // double-mount into one network request.
     api
       .get("/grading/competency")
       .then((r) => setState({ status: "ok", data: r.data }))
@@ -61,33 +63,32 @@ function Grouped({ data }) {
             data-testid={`competency-group-${k}`}
           >
             {groups.get(k).map((c) => (
-              <li
-                key={c.id}
-                className="px-4 py-3 flex items-start justify-between gap-3"
-              >
+              <li key={c.id}>
                 <Link
                   to={`/competency/${c.id}`}
-                  className="font-semibold underline-offset-2 hover:underline"
                   data-testid={`competency-link-${c.id}`}
+                  className="tap flex items-start justify-between gap-3 px-4 py-3"
                 >
-                  {c.name}
-                </Link>
-                <div className="flex flex-wrap justify-end gap-1 max-w-[60%]">
-                  {c.cleared.length === 0 ? (
-                    <span
-                      className="text-xs font-ui"
-                      style={{ color: "var(--fs-muted)" }}
-                    >
-                      None yet
-                    </span>
-                  ) : (
-                    c.cleared.map((s) => (
-                      <span key={s.id} className="fs-chip fs-chip-pass">
-                        {s.title}
+                  <span className="font-semibold flex-1 min-w-0 break-words">
+                    {c.name}
+                  </span>
+                  <span className="flex flex-wrap justify-end gap-1 max-w-[60%] shrink-0">
+                    {c.cleared.length === 0 ? (
+                      <span
+                        className="text-xs font-ui"
+                        style={{ color: "var(--fs-muted)" }}
+                      >
+                        None yet
                       </span>
-                    ))
-                  )}
-                </div>
+                    ) : (
+                      c.cleared.map((s) => (
+                        <span key={s.id} className="fs-chip fs-chip-pass">
+                          {s.title}
+                        </span>
+                      ))
+                    )}
+                  </span>
+                </Link>
               </li>
             ))}
           </ul>

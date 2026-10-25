@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
 import { agencyNav } from "@/featureRegistry";
 import { api, setForbiddenHandler } from "@/api";
@@ -15,10 +15,27 @@ export default function AgencyShell({ children, nav }) {
     () => localStorage.getItem(ROLE_KEY) || "Care Manager",
   );
   const [showCaregiverPicker, setShowCaregiverPicker] = useState(false);
+  // Stage 4-E: capture the element that opened the picker so focus
+  // returns there when the modal closes (a11y: focus never gets lost
+  // on the body).
+  const pickerTriggerRef = useRef(null);
 
   useEffect(() => {
     writeRole(role);
   }, [role]);
+
+  const openPicker = () => {
+    pickerTriggerRef.current = document.activeElement;
+    setShowCaregiverPicker(true);
+  };
+  const closePicker = () => {
+    setShowCaregiverPicker(false);
+    // Restore focus after unmount commits.
+    requestAnimationFrame(() => {
+      const t = pickerTriggerRef.current;
+      if (t && typeof t.focus === "function") t.focus();
+    });
+  };
 
   return (
     <ToastProvider>
@@ -27,14 +44,14 @@ export default function AgencyShell({ children, nav }) {
         <TopBar
           role={role}
           onRoleChange={setRole}
-          onOpenPicker={() => setShowCaregiverPicker(true)}
+          onOpenPicker={openPicker}
         />
         <main className="flex-1 px-5 py-5 pb-24" data-testid="agency-main">
           {children}
         </main>
         <BottomNav items={navItems} currentPath={location.pathname} />
         {showCaregiverPicker ? (
-          <CaregiverPicker onClose={() => setShowCaregiverPicker(false)} />
+          <CaregiverPicker onClose={closePicker} />
         ) : null}
       </div>
     </ToastProvider>
@@ -215,7 +232,7 @@ function CaregiverPicker({ onClose }) {
             type="button"
             onClick={onClose}
             data-testid="caregiver-picker-close"
-            aria-label="Close caregiver picker"
+            aria-label="Close"
             className="tap rounded-full"
           >
             <X size={18} aria-hidden="true" />

@@ -12,6 +12,8 @@ export default function SignoffPage() {
   const [tab, setTab] = useState("ready_to_sign");
 
   useEffect(() => {
+    // Stage 4-G: shared GET dedupe in api.js collapses the StrictMode
+    // double-mount into one network request.
     api
       .get("/grading/queue")
       .then((r) => setState({ status: "ok", data: r.data }))
@@ -105,29 +107,30 @@ function List({ rows, testid }) {
         <li key={a.id}>
           <Link
             to={`/signoff/${a.id}`}
-            className="fs-card p-4 flex items-center justify-between tap"
+            className="fs-card p-4 flex items-start justify-between gap-3 tap"
             data-testid={`signoff-row-${a.id}`}
           >
-            <div className="min-w-0">
-              <div className="font-semibold truncate">
+            <div className="min-w-0 flex-1">
+              <div className="font-semibold break-words">
                 {a.caregiver.name}
               </div>
               <div
-                className="font-ui text-xs truncate"
+                className="font-ui text-xs break-words"
                 style={{ color: "var(--fs-muted)" }}
               >
-                {a.skill.title} · {fmtDate(a.created_at)}
+                {a.skill.title}
+                <span className="whitespace-nowrap"> · {fmtDate(a.created_at)}</span>
               </div>
             </div>
-            <div className="flex flex-col items-end gap-1">
+            <div className="flex flex-col items-end gap-1 shrink-0">
               {typeof a.score === "number" ? (
-                <span className="fs-chip">
+                <span className="fs-chip whitespace-nowrap">
                   {Math.round(a.score * 100)}%
                 </span>
               ) : null}
               {a.graded_once ? (
                 <span
-                  className="fs-chip fs-chip-warn"
+                  className="fs-chip fs-chip-warn whitespace-nowrap"
                   data-testid={`signoff-row-${a.id}-graded-once`}
                 >
                   graded once

@@ -34,11 +34,13 @@ _PROMPT_TEMPLATES: dict[str, dict[str, str]] = {
         "step_header": "Step {n}/{total}: {title}",
         "step_safety_en_hint": "⚠ Safety-critical. In English: {en}",
         "step_next_hint": "Reply with anything to continue.",
+        "step_next_button": "Next",
         "quiz_header": "Quiz question {n}/{total}: {prompt}",
-        "quiz_opt": "{letter}. {text}",
+        "quiz_opt": "{num}. {text}",
         "quiz_prompt": "Reply 1, 2, or 3.",
+        "quiz_prompt_invalid": "Please answer 1, 2, or 3.",
         "quiz_correct": "Correct ✓",
-        "quiz_wrong": "Not quite. The answer is: {letter}",
+        "quiz_wrong": "Not quite. The answer is: {num}",
         "video_request": "Last step: send a practice video, under 45 seconds.",
         "checking_video": "Checking your video…",
         "still_checking": "Still checking…",
@@ -58,11 +60,13 @@ _PROMPT_TEMPLATES: dict[str, dict[str, str]] = {
         "step_header": "Paso {n}/{total}: {title}",
         "step_safety_en_hint": "⚠ Crítica para la seguridad. En inglés: {en}",
         "step_next_hint": "Responde cualquier cosa para continuar.",
+        "step_next_button": "Siguiente",
         "quiz_header": "Pregunta {n}/{total}: {prompt}",
-        "quiz_opt": "{letter}. {text}",
+        "quiz_opt": "{num}. {text}",
         "quiz_prompt": "Responde 1, 2 o 3.",
+        "quiz_prompt_invalid": "Por favor responde 1, 2 o 3.",
         "quiz_correct": "¡Correcto! ✓",
-        "quiz_wrong": "No del todo. La respuesta es: {letter}",
+        "quiz_wrong": "No del todo. La respuesta es: {num}",
         "video_request": "Último paso: envía un video de práctica, menos de 45 segundos.",
         "checking_video": "Revisando tu video…",
         "still_checking": "Aún revisando…",
@@ -82,11 +86,13 @@ _PROMPT_TEMPLATES: dict[str, dict[str, str]] = {
         "step_header": "Hakbang {n}/{total}: {title}",
         "step_safety_en_hint": "⚠ Kritikal sa kaligtasan. Sa Ingles: {en}",
         "step_next_hint": "Mag-reply ng kahit ano para magpatuloy.",
+        "step_next_button": "Susunod",
         "quiz_header": "Tanong {n}/{total}: {prompt}",
-        "quiz_opt": "{letter}. {text}",
+        "quiz_opt": "{num}. {text}",
         "quiz_prompt": "Mag-reply ng 1, 2, o 3.",
+        "quiz_prompt_invalid": "Mangyaring sumagot ng 1, 2, o 3.",
         "quiz_correct": "Tama ✓",
-        "quiz_wrong": "Hindi tama. Ang sagot ay: {letter}",
+        "quiz_wrong": "Hindi tama. Ang sagot ay: {num}",
         "video_request": "Huling hakbang: magpadala ng practice video, mas mababa sa 45 segundo.",
         "checking_video": "Sinusuri ang video mo…",
         "still_checking": "Sinusuri pa rin…",
@@ -225,8 +231,24 @@ def _localized_quiz(skill: dict, q: dict, lang: str) -> dict:
 
 
 # ---------- outbound helpers ----------
-async def _send(caregiver_id: str, text: str, *, media_id: str | None = None) -> None:
-    await send_message_async(caregiver_id, text, media_id=media_id)
+async def _send(
+    caregiver_id: str,
+    text: str,
+    *,
+    media_id: str | None = None,
+    question_type: str | None = None,
+    question_payload: dict | None = None,
+) -> None:
+    """Thin wrapper around `send_message_async` that forwards question
+    metadata so the caregiver UI's quick-reply bar can read directly from
+    the latest message's `question_type` + `question_payload`."""
+    await send_message_async(
+        caregiver_id,
+        text,
+        media_id=media_id,
+        question_type=question_type,
+        question_payload=question_payload,
+    )
 
 
 # ---------- menu ----------
@@ -241,7 +263,18 @@ async def _send_menu(caregiver_id: str, caregiver: dict, *, prefix: str | None =
     for i, s in enumerate(remaining, start=1):
         lines.append(_t(lang, "menu_item", n=i, title=_localized_title(s, lang)))
     lines.append(_t(lang, "menu_prompt"))
-    await _send(caregiver_id, "\n".join(lines))
+    payload = {
+        "skills": [
+            {"n": i, "id": s["_id"], "title": _localized_title(s, lang)}
+            for i, s in enumerate(remaining, start=1)
+        ],
+    }
+    await _send(
+        caregiver_id,
+        "\n".join(lines),
+        question_type="skill_menu",
+        question_payload=payload,
+    )
 
 
 async def _send_step(caregiver_id: str, caregiver: dict, skill: dict, step_index: int) -> None:
@@ -265,7 +298,14 @@ async def _send_step(caregiver_id: str, caregiver: dict, skill: dict, step_index
                 lines.append(_t(lang, "step_safety_en_hint", en=f"{en} ({translated})"))
                 break
     lines.append(_t(lang, "step_next_hint"))
-    await _send(caregiver_id, "\n".join(lines), media_id=step.get("frame_id"))
+    payload = {"next_label": _t(lang, "step_next_button")}
+    await _send(
+        caregiver_id,
+        "\n".join(lines),
+        media_id=step.get("frame_id"),
+        question_type="step",
+        question_payload=payload,
+    )
 
 
 async def _send_quiz(caregiver_id: str, caregiver: dict, skill: dict, qi: int) -> None:
@@ -273,11 +313,22 @@ async def _send_quiz(caregiver_id: str, caregiver: dict, skill: dict, qi: int) -
     quiz = skill.get("quiz") or []
     q = quiz[qi]
     loc = _localized_quiz(skill, q, lang)
+    choices = loc["choices"][:3]
     lines = [_t(lang, "quiz_header", n=qi + 1, total=len(quiz), prompt=loc["prompt"])]
-    for i, opt in enumerate(loc["choices"][:3]):
-        lines.append(_t(lang, "quiz_opt", letter=chr(ord("A") + i), text=opt))
+    for i, opt in enumerate(choices):
+        lines.append(_t(lang, "quiz_opt", num=i + 1, text=opt))
     lines.append(_t(lang, "quiz_prompt"))
-    await _send(caregiver_id, "\n".join(lines))
+    payload = {
+        "options": [
+            {"n": i + 1, "text": opt} for i, opt in enumerate(choices)
+        ],
+    }
+    await _send(
+        caregiver_id,
+        "\n".join(lines),
+        question_type="quiz",
+        question_payload=payload,
+    )
 
 
 async def _ask_for_video(caregiver_id: str, caregiver: dict) -> None:
@@ -287,6 +338,7 @@ async def _ask_for_video(caregiver_id: str, caregiver: dict) -> None:
 
 # ---------- menu-reply parsing ----------
 _NUMBER_RE = re.compile(r"\b(\d{1,2})\b")
+_LETTER_RE = re.compile(r"\b([a-cA-C])\b")
 
 
 def _parse_number(text: str) -> int | None:
@@ -297,6 +349,22 @@ def _parse_number(text: str) -> int | None:
         return int(m.group(1))
     except ValueError:
         return None
+
+
+def _parse_quiz_answer(text: str) -> int | None:
+    """Return the 1-based option number for a quiz reply.
+
+    Accepts both ``1/2/3`` and ``A/B/C`` (case-insensitive). Any other
+    input returns None so the caller can send the localized retry
+    prompt ("Please answer 1, 2, or 3.").
+    """
+    n = _parse_number(text or "")
+    if n is not None and 1 <= n <= 3:
+        return n
+    m = _LETTER_RE.search(text or "")
+    if m:
+        return ord(m.group(1).lower()) - ord("a") + 1
+    return None
 
 
 # ---------- the FSM ----------
@@ -380,16 +448,20 @@ async def handle_inbound(
             await _update_conversation(conv["_id"], {"state": "awaiting_video"})
             await _ask_for_video(caregiver_id, caregiver)
             return await _public_state(caregiver_id)
-        chosen = _parse_number(text)
+        chosen = _parse_quiz_answer(text)
         if not chosen or chosen < 1 or chosen > 3:
-            await _send(caregiver_id, _t(lang, "quiz_prompt"))
+            # Resend the current quiz question with the full payload so
+            # the quick-reply bar still has an active `question_type:
+            # "quiz"` message to key off.
+            await _send(caregiver_id, _t(lang, "quiz_prompt_invalid"))
+            await _send_quiz(caregiver_id, caregiver, skill, qi)
             return await _public_state(caregiver_id)
         correct_idx = int(q.get("answer_index") or 0)
         correct = (chosen - 1) == correct_idx
         if correct:
             await _send(caregiver_id, _t(lang, "quiz_correct"))
         else:
-            await _send(caregiver_id, _t(lang, "quiz_wrong", letter=chr(ord("A") + correct_idx)))
+            await _send(caregiver_id, _t(lang, "quiz_wrong", num=correct_idx + 1))
         patch: dict = {"quiz_index": qi + 1}
         if correct:
             patch["correct_count"] = int(conv.get("correct_count") or 0) + 1
@@ -463,6 +535,41 @@ async def _advance_from_lesson(
     else:
         await _update_conversation(conv_id, {"state": "awaiting_video"})
         await _ask_for_video(caregiver_id, caregiver)
+
+
+# ---------- lessons-tab shortcut ----------
+async def open_lesson(caregiver_id: str, skill_id: str) -> dict:
+    """Jump directly to a lesson from outside the chat (e.g. the Lessons tab).
+
+    Mirrors "picked the skill from the menu by its number" without the
+    caregiver having to type anything. Transitions the conversation to
+    `in_lesson` and sends step 0 of the chosen skill. Returns the public
+    conversation state so the caller can navigate confidently.
+
+    Idempotent: calling with the same skill again while the caregiver is
+    already in that lesson restarts it from step 0.
+    """
+    caregiver = await _get_caregiver(caregiver_id)
+    if not caregiver:
+        return {"error": "caregiver_not_found"}
+    skill = await _skill(skill_id)
+    if not skill:
+        return {"error": "skill_not_found"}
+    conv = await _get_or_create_conversation(caregiver_id)
+    await _update_conversation(conv["_id"], {
+        "state": "in_lesson",
+        "skill_id": skill_id,
+        "step_index": 0,
+        "quiz_index": 0,
+        "correct_count": 0,
+        "greeted": True,
+    })
+    steps = skill.get("steps") or []
+    if steps:
+        await _send_step(caregiver_id, caregiver, skill, 0)
+    else:
+        await _advance_from_lesson(caregiver_id, caregiver, skill, conv["_id"], last_step=True)
+    return await _public_state(caregiver_id)
 
 
 # ---------- grading hand-off ----------

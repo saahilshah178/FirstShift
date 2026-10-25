@@ -8,12 +8,13 @@ from __future__ import annotations
 import io
 import logging
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
 from db import get_db
 from media.store import get_media_store
+from roles import Role, require_role
 
-from .state_machine import handle_inbound, _public_state  # noqa: F401
+from .state_machine import handle_inbound, _public_state, open_lesson  # noqa: F401
 
 logger = logging.getLogger("firstshift.channel.routes")
 
@@ -21,14 +22,16 @@ router = APIRouter()
 
 
 ACCEPTED_VIDEO_TYPES = {"video/mp4", "video/quicktime", "video/webm"}
+_CARE_MANAGER_ROLE = require_role({Role.CARE_MANAGER})
 
 
 @router.get("/messages/{caregiver_id}")
 async def list_messages(caregiver_id: str) -> dict:
     db = get_db()
     rows = await db.messages.find({"caregiver_id": caregiver_id}).sort("created_at", 1).to_list(length=500)
-    out = [
-        {
+    out = []
+    for r in rows:
+        row = {
             "id": r["_id"],
             "direction": r.get("direction"),
             "channel": r.get("channel"),
@@ -36,8 +39,13 @@ async def list_messages(caregiver_id: str) -> dict:
             "media_id": r.get("media_id"),
             "created_at": r.get("created_at"),
         }
-        for r in rows
-    ]
+        # Stage 2 — surface question metadata so the caregiver UI's
+        # quick-reply bar reads from the LATEST question message.
+        if r.get("question_type"):
+            row["question_type"] = r["question_type"]
+            if r.get("question_payload") is not None:
+                row["question_payload"] = r["question_payload"]
+        out.append(row)
     return {"messages": out}
 
 
@@ -108,3 +116,99 @@ async def inbound_video(
         media_id=media_id,
     )
     return {"ok": True, "media_id": media_id, "conversation": result}
+
+
+@router.post("/open-lesson")
+async def open_lesson_route(body: dict) -> dict:
+    """Jump into a specific lesson from the Lessons tab (Stage 2 — Item F).
+
+    Body: `{caregiver_id, skill_id}`. Transitions the FSM to `in_lesson`
+    and sends step 0 as a bot message, same shape as the regular menu
+    pick. The frontend then navigates to `/c/{code}/chat`.
+    """
+    caregiver_id = str(body.get("caregiver_id") or "").strip()
+    skill_id = str(body.get("skill_id") or "").strip()
+    if not caregiver_id or not skill_id:
+        raise HTTPException(status_code=422, detail="caregiver_id and skill_id required")
+    result = await open_lesson(caregiver_id, skill_id)
+    if isinstance(result, dict) and result.get("error"):
+        raise HTTPException(status_code=404, detail=result["error"])
+    return {"ok": True, "conversation": result}
+
+
+@router.post("/dev/reset/{caregiver_id}")
+async def dev_reset_conversation(
+    caregiver_id: str,
+    _role: str = Depends(_CARE_MANAGER_ROLE),
+) -> dict:
+    """Reset a caregiver's conversation state so Stage-3 testing + demos
+    can replay a flow without wiping messages.
+
+    - Sets conversation `state` to `idle`.
+    - Clears `greeted`, `skill_id`, `step_index`, `quiz_index`,
+      `correct_count` so the next inbound text triggers the welcome +
+      skill menu again.
+    - Messages are **preserved** so testers can still see history.
+    - **Stage 4 fixup**: also clears any `plans.items[].refresher`
+      overrides and deletes orphaned `refresher_drafts` rows for this
+      caregiver. Without this, a near-miss + reset sequence left the
+      caregiver stuck in refresher mode and the "Report near-miss"
+      button never re-appeared on the competency file. `incidents` are
+      an audit trail and are NOT wiped.
+
+    Gated on `X-Firstshift-Role: Care Manager` via the shared
+    `require_role` dependency. Idempotent — safe to call repeatedly;
+    `modified`/`refresher_cleared`/`drafts_deleted` reflect what
+    actually changed on this call.
+    """
+    db = get_db()
+    caregiver = await db.caregivers.find_one(
+        {"_id": caregiver_id}, {"_id": 1},
+    )
+    if not caregiver:
+        raise HTTPException(status_code=404, detail="caregiver not found")
+    r = await db.conversations.update_one(
+        {"caregiver_id": caregiver_id},
+        {
+            "$set": {"state": "idle", "greeted": False},
+            "$unset": {
+                "skill_id": "",
+                "step_index": "",
+                "quiz_index": "",
+                "correct_count": "",
+            },
+        },
+    )
+
+    # Stage 4 fixup: wipe `refresher: true` flags on every plan item.
+    # `arrayFilters` is the cheapest way to target only the items that
+    # need the write (so `modified_count` stays accurate across reruns).
+    # If the caregiver has no plan doc yet (never read), nothing to do.
+    plan_update = await db.plans.update_one(
+        {"caregiver_id": caregiver_id},
+        {"$set": {"items.$[el].refresher": False}},
+        array_filters=[{"el.refresher": True}],
+    )
+
+    # Also drop any orphaned draft refresher messages for this caregiver.
+    # `incidents` are deliberately left intact — they're the audit log.
+    draft_del = await db.refresher_drafts.delete_many(
+        {"caregiver_id": caregiver_id},
+    )
+
+    logger.info(
+        "dev reset: caregiver=%s conv_modified=%d refresher_cleared=%d drafts_deleted=%d",
+        caregiver_id,
+        r.modified_count,
+        plan_update.modified_count,
+        draft_del.deleted_count,
+    )
+    return {
+        "ok": True,
+        "caregiver_id": caregiver_id,
+        "matched": r.matched_count,
+        "modified": r.modified_count,
+        "refresher_cleared": plan_update.modified_count,
+        "drafts_deleted": draft_del.deleted_count,
+    }
+

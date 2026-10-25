@@ -37,22 +37,14 @@ export default function CaregiverLayout({ nav }) {
 
   useEffect(() => {
     if (needsUpperRedirect) return undefined;
-    const ac = new AbortController();
+    // Stage 4-G: shared GET dedupe in api.js collapses the StrictMode
+    // double-mount into one request. No local AbortController — mixing
+    // signal-based cancellation with the shared promise cache rejects
+    // mount-2's handler with CanceledError and the state never advances.
     api
-      .get(`/caregivers/by-code/${encodeURIComponent(upperCode)}`, {
-        signal: ac.signal,
-      })
+      .get(`/caregivers/by-code/${encodeURIComponent(upperCode)}`)
       .then((r) => setState({ status: "ok", data: r.data }))
       .catch((e) => {
-        // Axios aborts surface as CanceledError (name) / ERR_CANCELED (code);
-        // fetch would use AbortError. Treat all three the same.
-        if (
-          e?.name === "CanceledError" ||
-          e?.name === "AbortError" ||
-          e?.code === "ERR_CANCELED"
-        ) {
-          return;
-        }
         const s = e?.response?.status;
         if (s === 404) {
           setState({ status: "404" });
@@ -60,7 +52,6 @@ export default function CaregiverLayout({ nav }) {
           setState({ status: "error", error: e?.message || "failed" });
         }
       });
-    return () => ac.abort();
   }, [upperCode, needsUpperRedirect]);
 
   if (state.status === "loading") {
@@ -85,15 +76,13 @@ export default function CaregiverLayout({ nav }) {
         data-testid="caregiver-404"
       >
         <div className="flex-1 flex flex-col items-center justify-center text-center px-8 gap-3">
-          <h1 className="text-2xl font-semibold">We can't find that code</h1>
+          <h1 className="text-2xl font-semibold">Code not found</h1>
           <p style={{ color: "var(--fs-muted)" }}>
-            The link may be wrong, or the caregiver account was removed.
-            Please check with your care manager for the correct link.
+            Please check your link or contact your coordinator.
           </p>
-          {/* "Back to agency" intentionally omitted — caregivers never
-              see the agency app. Agency staff who hit this get here by
-              typing a bad code in the picker; they can use the browser
-              back button or re-open the picker. */}
+          {/* Stage 4-F: no "Back to agency" button — caregivers never
+              see agency surfaces. Agency staff who hit this via a bad
+              code in the picker can use the browser back button. */}
         </div>
       </div>
     );
@@ -163,7 +152,10 @@ export default function CaregiverLayout({ nav }) {
             {code}
           </code>
         </header>
-        <main className="flex-1 pb-24" data-testid="caregiver-main">
+        <main
+          className="flex-1 pb-14 overflow-y-auto"
+          data-testid="caregiver-main"
+        >
           <Outlet />
         </main>
         <nav

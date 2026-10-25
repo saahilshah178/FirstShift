@@ -72,9 +72,15 @@ textarea,
         "Helvetica Neue", Arial, sans-serif;
 }
 
+/* Stage 4: `.tap` previously set `display: inline-flex` unconditionally,
+   which fought with Tailwind's `.flex`/`.block`/`.grid` utilities on
+   full-row <Link class="tap flex ...">. We only want the inline-flex
+   layout when the element has NO explicit display utility. */
 .tap {
     min-height: var(--fs-tap);
     min-width: var(--fs-tap);
+}
+.tap:not(.flex):not(.block):not(.grid):not(.inline):not(.hidden) {
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -96,6 +102,15 @@ input[type="submit"] {
     color: var(--fs-fg);
     display: flex;
     flex-direction: column;
+}
+
+/* Caregiver side: lock to the viewport height so the chat composer sits
+   directly above the fixed bottom-tab bar (Stage 2 — Item E). The outer
+   frame NEVER grows past 100vh; the thread section scrolls inside. */
+.fs-frame[data-side="caregiver"] {
+    height: 100vh;
+    min-height: 0;
+    overflow: hidden;
 }
 
 .fs-card {
@@ -134,6 +149,12 @@ input[type="submit"] {
     color: var(--fs-fail);
     border-color: #e9c9c9;
     background: #f6e4e4;
+}
+.fs-chip-muted {
+    color: var(--fs-muted);
+    border-color: var(--fs-border);
+    background: transparent;
+    font-weight: 400;
 }
 
 /* Focus ring high enough for accessibility. */

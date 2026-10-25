@@ -6,6 +6,40 @@ import { useCaregiver } from "@/shell/CaregiverLayout";
 const MAX_DURATION = 45;
 const MIN_DURATION = 3;
 
+/* Stage 2 — status chip labels per language. Same source of truth agency
+   uses (/api/lessons/caregiver). Every status is labelled (`todo` renders
+   a muted "Not started" chip; see fixups). */
+const CHIP_LABELS = {
+  en: {
+    cleared: "Cleared",
+    awaiting_signoff: "Waiting for sign-off",
+    practice_video_next: "Practice video next",
+    in_progress: "In progress",
+    todo: "Not started",
+  },
+  es: {
+    cleared: "Aprobado",
+    awaiting_signoff: "Esperando firma",
+    practice_video_next: "Falta el video",
+    in_progress: "En progreso",
+    todo: "Sin comenzar",
+  },
+  tl: {
+    cleared: "Natapos na",
+    awaiting_signoff: "Hinihintay ang sign-off",
+    practice_video_next: "Susunod ang practice video",
+    in_progress: "Kasalukuyang ginagawa",
+    todo: "Hindi pa nasimulan",
+  },
+};
+
+function chipClass(status) {
+  if (status === "cleared") return "fs-chip-pass";
+  if (status === "awaiting_signoff" || status === "practice_video_next") return "fs-chip-warn";
+  if (status === "todo") return "fs-chip-muted";
+  return "";
+}
+
 const T = {
   en: {
     title: "Practice",
@@ -75,22 +109,28 @@ export default function PracticePage() {
   const navigate = useNavigate();
   const t = T[caregiver.language] || T.en;
   const [skills, setSkills] = useState(null);
+  const [statusByCaregiver, setStatusByCaregiver] = useState({});
   const [selected, setSelected] = useState(null);
   const [state, setState] = useState({ status: "idle" });
 
   useEffect(() => {
     // Fetch skill full docs (not just the list) so we have translations/steps.
-    api
-      .get("/lessons/skills")
-      .then(async (r) => {
-        // We need the full skill docs; fetch each via lessons/caregiver and
-        // flatten. The cheapest route today: call lessons/caregiver and use
-        // its titles plus call-per-skill isn't exposed, so we hit the raw
-        // skills query via /api/openapi… instead reuse what we have.
-        setSkills(r.data.skills);
+    // Also pull `/lessons/caregiver/{id}` for the per-skill status chip —
+    // same source agency uses, so no duplicate logic (Stage 2 — Item G).
+    Promise.all([
+      api.get("/lessons/skills"),
+      api.get(`/lessons/caregiver/${caregiver.id}`),
+    ])
+      .then(([s, cg]) => {
+        setSkills(s.data.skills);
+        const byId = {};
+        for (const row of [...(cg.data.cleared || []), ...(cg.data.remaining || [])]) {
+          byId[row.id] = row.status;
+        }
+        setStatusByCaregiver(byId);
       })
       .catch(() => setSkills([]));
-  }, []);
+  }, [caregiver.id]);
 
   // We only have titles from /lessons/skills. For step + translation data,
   // fetch per-skill via a sibling endpoint we added for grading: use the
@@ -129,24 +169,38 @@ export default function PracticePage() {
             className="fs-card fs-divider"
             data-testid="practice-skill-list"
           >
-            {skills.map((s) => (
-              <li key={s.id}>
-                <button
-                  type="button"
-                  onClick={() => setSelected(s)}
-                  data-testid={`practice-pick-${s.id}`}
-                  className="w-full tap text-left px-4 py-4 flex items-center justify-between gap-4"
-                >
-                  <span className="font-semibold leading-snug">{s.title}</span>
-                  <span
-                    className="font-ui text-xs whitespace-nowrap"
-                    style={{ color: "var(--fs-muted)" }}
+            {skills.map((s) => {
+              const status = statusByCaregiver[s.id];
+              const chipLabel = CHIP_LABELS[caregiver.language]?.[status] || CHIP_LABELS.en[status];
+              return (
+                <li key={s.id}>
+                  <button
+                    type="button"
+                    onClick={() => setSelected(s)}
+                    data-testid={`practice-pick-${s.id}`}
+                    className="w-full tap text-left px-4 py-4 flex items-center gap-3"
                   >
-                    {s.step_count} steps
-                  </span>
-                </button>
-              </li>
-            ))}
+                    <span className="flex-1 font-semibold leading-snug min-w-0">
+                      {s.title}
+                    </span>
+                    <span
+                      className="font-ui text-xs whitespace-nowrap"
+                      style={{ color: "var(--fs-muted)" }}
+                    >
+                      {s.step_count} steps
+                    </span>
+                    {chipLabel ? (
+                      <span
+                        className={`fs-chip whitespace-nowrap ${chipClass(status)}`}
+                        data-testid={`practice-chip-${s.id}`}
+                      >
+                        {chipLabel}
+                      </span>
+                    ) : null}
+                  </button>
+                </li>
+              );
+            })}
           </ul>
         )}
       </div>

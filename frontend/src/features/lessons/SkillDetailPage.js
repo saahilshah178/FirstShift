@@ -1,18 +1,21 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, absoluteUrl } from "@/api";
-import { useRole, canEditSkill, canArchiveSkill } from "@/hooks/useRole";
+import { useCaps } from "@/hooks/useRole";
 
 export default function SkillDetailPage() {
   const { skillId } = useParams();
   const nav = useNavigate();
-  const role = useRole();
-  const canEdit = canEditSkill(role);
-  const canArchive = canArchiveSkill(role);
+  const { can } = useCaps();
+  const canEdit = can.editSkills;
+  const canArchive = can.archive;
+  const canReplaceSource = can.replaceSource;
   const [skill, setSkill] = useState(null);
   const [err, setErr] = useState(null);
   const [lang, setLang] = useState("en");
-  const [retrying, setRetrying] = useState(false);
+  const [retrying, setRetrying] = useState(null); // null | "es" | "tl"
+  const [replacing, setReplacing] = useState(false);
+  const replaceInputRef = useRef(null);
 
   const load = useMemo(
     () => async () => {
@@ -27,6 +30,8 @@ export default function SkillDetailPage() {
     [skillId],
   );
   useEffect(() => {
+    // Stage 4-G: shared GET dedupe in api.js collapses the StrictMode
+    // double-mount into one network request.
     load();
   }, [load]);
 
@@ -49,23 +54,49 @@ export default function SkillDetailPage() {
     }
   };
 
-  const retryTranslations = async () => {
-    setRetrying(true);
+  const retryTranslation = async (langCode) => {
+    setRetrying(langCode);
     try {
-      await api.post(`/lessons/skills/${skillId}/translations/retry`);
+      await api.post(`/lessons/skills/${skillId}/translations/retry?lang=${langCode}`);
       await load();
     } catch (e) {
       setErr(e?.message || "translate failed");
     } finally {
-      setRetrying(false);
+      setRetrying(null);
+    }
+  };
+
+  const onReplaceSourcePick = async (ev) => {
+    const file = ev.target.files && ev.target.files[0];
+    ev.target.value = "";
+    if (!file) return;
+    if (!window.confirm(
+      `Replace the source video for "${skill.title}"? ` +
+      "This re-extracts every step's frame at its current start time. " +
+      "It does NOT bump the version or touch translations."
+    )) return;
+    setReplacing(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      // Let axios set its own multipart boundary — explicitly setting
+      // Content-Type without a boundary breaks server parsing on some
+      // runtimes.
+      await api.post(`/lessons/skills/${skillId}/replace_source_video`, fd);
+      await load();
+    } catch (e) {
+      const detail = e?.response?.data?.detail;
+      setErr(typeof detail === "string" ? detail : e?.message || "replace failed");
+    } finally {
+      setReplacing(false);
     }
   };
 
   return (
     <section className="space-y-5" data-testid="skill-detail">
-      <header className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <h1 className="text-2xl font-semibold" data-testid="skill-title">
+      <header className="flex flex-col gap-3">
+        <div className="min-w-0 flex-1">
+          <h1 className="text-2xl font-semibold break-words" data-testid="skill-title">
             {skill.title}
           </h1>
           <p className="text-xs font-ui" style={{ color: "var(--fs-muted)" }}>
@@ -73,7 +104,30 @@ export default function SkillDetailPage() {
             {skill.source_credit ? ` · ${skill.source_credit}` : ""}
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          {canReplaceSource ? (
+            <>
+              <button
+                type="button"
+                onClick={() => replaceInputRef.current && replaceInputRef.current.click()}
+                disabled={replacing}
+                data-testid="skill-replace-source-btn"
+                className="tap px-3 text-sm font-ui rounded-full border"
+                style={{ borderColor: "var(--fs-border)" }}
+                title="Upload a new source video — re-extracts every step's frame; does NOT create a draft or bump version."
+              >
+                {replacing ? "Replacing…" : "Replace source video"}
+              </button>
+              <input
+                ref={replaceInputRef}
+                type="file"
+                accept="video/mp4,video/webm,video/quicktime"
+                onChange={onReplaceSourcePick}
+                data-testid="skill-replace-source-input"
+                className="hidden"
+              />
+            </>
+          ) : null}
           {canEdit ? (
             <button
               type="button"
@@ -142,8 +196,8 @@ export default function SkillDetailPage() {
             await api.post(`/lessons/skills/${skillId}/translations/${lang}/review`);
             load();
           }}
-          onRetry={retryTranslations}
-          retrying={retrying}
+          onRetry={() => retryTranslation(lang)}
+          retrying={retrying === lang}
         />
       )}
     </section>
@@ -222,7 +276,20 @@ function EnglishView({ skill }) {
                   ) : null}
                 </button>
               ) : (
-                <div className="w-28 h-20 rounded-md shrink-0" style={{ background: "var(--fs-accent)" }} />
+                <div
+                  className="w-28 h-20 rounded-md shrink-0 flex flex-col items-center justify-center font-ui border border-dashed"
+                  data-testid={`skill-en-no-frame-${s.n}`}
+                  style={{
+                    borderColor: "var(--fs-border)",
+                    background: "transparent",
+                    color: "var(--fs-muted)",
+                  }}
+                >
+                  <span aria-hidden="true" style={{ fontSize: "1.1rem", lineHeight: 1 }}>
+                    🖼
+                  </span>
+                  <span className="text-[10px] mt-1">No image yet</span>
+                </div>
               )}
               <div className="min-w-0">
                 <p className="font-semibold">{s.n}. {s.title}</p>

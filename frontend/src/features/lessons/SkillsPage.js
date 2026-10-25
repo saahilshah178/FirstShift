@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api } from "@/api";
-import { useRole, canRecordSkill } from "@/hooks/useRole";
+import { useCaps } from "@/hooks/useRole";
 
 function stageLabel(status) {
   switch (status) {
@@ -35,8 +35,8 @@ function stageTone(status) {
 
 export default function SkillsPage() {
   const nav = useNavigate();
-  const role = useRole();
-  const canRecord = canRecordSkill(role);
+  const { can } = useCaps();
+  const canRecord = can.recordSkill;
   const [skills, setSkills] = useState(null);
   const [jobs, setJobs] = useState([]);
   const [err, setErr] = useState(null);
@@ -46,7 +46,9 @@ export default function SkillsPage() {
       try {
         const [s, j] = await Promise.all([
           api.get("/lessons/skills"),
-          canRecord ? api.get("/lessons/jobs") : Promise.resolve({ data: { jobs: [] } }),
+          canRecord
+            ? api.get("/lessons/jobs")
+            : Promise.resolve({ data: { jobs: [] } }),
         ]);
         setSkills(s.data.skills || []);
         setJobs(j.data.jobs || []);
@@ -58,6 +60,8 @@ export default function SkillsPage() {
   );
 
   useEffect(() => {
+    // Stage 4-G: shared GET dedupe in api.js collapses the StrictMode
+    // double-mount into one network request.
     load();
   }, [load]);
 
@@ -99,16 +103,9 @@ export default function SkillsPage() {
         ) : null}
       </header>
 
-      {!canRecord ? (
-        <p
-          className="text-xs font-ui fs-card px-4 py-2"
-          style={{ color: "var(--fs-muted)" }}
-          data-testid="skills-role-note"
-        >
-          Scheduler view — read only. Switch to Care Manager or Trainer to record or edit skills.
-        </p>
-      ) : null}
-
+      {/* Stage 4-D: no "Switch to Care Manager" nag on a view-only
+          page. The role selector in the top bar is the one source of
+          truth; a quiet read-only state is enough. */}
       {err ? (
         <p className="text-sm" style={{ color: "var(--fs-fail)" }} data-testid="skills-error">
           {err}
@@ -125,37 +122,35 @@ export default function SkillsPage() {
           </h2>
           <ul className="fs-card fs-divider" data-testid="jobs-list">
             {jobs.map((j) => (
-              <li
-                key={j.id}
-                data-testid={`job-row-${j.id}`}
-                className="px-4 py-3 flex items-center justify-between gap-3"
-              >
-                <div className="min-w-0">
-                  <Link
-                    to={`/skills/drafts/${j.id}`}
-                    className="font-semibold truncate block"
-                    data-testid={`job-link-${j.id}`}
-                  >
-                    {j.draft?.title || "(no title yet)"}
-                  </Link>
-                  <div
-                    className="text-xs font-ui mt-0.5"
-                    style={{ color: "var(--fs-muted)" }}
-                  >
-                    {new Date(j.updated_at).toLocaleString()}
-                    {j.source_credit ? ` · ${j.source_credit}` : ""}
-                  </div>
-                </div>
-                <span
-                  className="fs-chip"
-                  style={{
-                    color: stageTone(j.status),
-                    borderColor: stageTone(j.status),
-                  }}
-                  data-testid={`job-status-${j.id}`}
+              <li key={j.id} data-testid={`job-row-${j.id}`}>
+                <Link
+                  to={`/skills/drafts/${j.id}`}
+                  data-testid={`job-link-${j.id}`}
+                  className="tap flex items-start justify-between gap-3 px-4 py-3"
                 >
-                  {stageLabel(j.status)}
-                </span>
+                  <div className="min-w-0 flex-1">
+                    <div className="font-semibold break-words block">
+                      {j.draft?.title || "(no title yet)"}
+                    </div>
+                    <div
+                      className="text-xs font-ui mt-0.5"
+                      style={{ color: "var(--fs-muted)" }}
+                    >
+                      {new Date(j.updated_at).toLocaleString()}
+                      {j.source_credit ? ` · ${j.source_credit}` : ""}
+                    </div>
+                  </div>
+                  <span
+                    className="fs-chip shrink-0 whitespace-nowrap"
+                    style={{
+                      color: stageTone(j.status),
+                      borderColor: stageTone(j.status),
+                    }}
+                    data-testid={`job-status-${j.id}`}
+                  >
+                    {stageLabel(j.status)}
+                  </span>
+                </Link>
               </li>
             ))}
           </ul>
@@ -187,13 +182,13 @@ export default function SkillsPage() {
                 <Link
                   to={`/skills/${s.id}`}
                   data-testid={`skill-link-${s.id}`}
-                  className="tap flex items-center justify-between gap-3 px-4 py-3"
+                  className="tap flex items-start justify-between gap-3 px-4 py-3"
                 >
-                  <span className="font-semibold truncate flex-1 min-w-0">
+                  <span className="font-semibold flex-1 min-w-0 break-words">
                     {s.title}
                   </span>
                   <span
-                    className="text-xs font-ui whitespace-nowrap"
+                    className="text-xs font-ui whitespace-nowrap text-right shrink-0"
                     style={{ color: "var(--fs-muted)" }}
                   >
                     {s.step_count} steps · {s.check_count} checks

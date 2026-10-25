@@ -1,7 +1,7 @@
 import React, { useMemo, useRef, useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { api } from "@/api";
-import { useRole, canRecordSkill } from "@/hooks/useRole";
+import { useCaps } from "@/hooks/useRole";
 
 const MAX_BYTES = 300 * 1024 * 1024;
 const MAX_DURATION_S = 120;
@@ -26,8 +26,8 @@ async function probeDuration(file) {
 
 export default function RecordPage() {
   const nav = useNavigate();
-  const role = useRole();
-  const allowed = canRecordSkill(role);
+  const { can } = useCaps();
+  const allowed = can.recordSkill;
   const [file, setFile] = useState(null);
   const [sourceCredit, setSourceCredit] = useState("");
   const [err, setErr] = useState(null);
@@ -115,7 +115,7 @@ export default function RecordPage() {
           className="text-sm font-ui fs-card px-4 py-3"
           style={{ color: "var(--fs-muted)" }}
         >
-          Switch to Care Manager or Trainer to record skills.
+          Read only. Recording a skill is for Care Manager or Trainer.
         </p>
       </section>
     );

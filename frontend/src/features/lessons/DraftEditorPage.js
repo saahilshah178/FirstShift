@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, absoluteUrl } from "@/api";
-import { useRole, canEditSkill } from "@/hooks/useRole";
+import { useCaps } from "@/hooks/useRole";
 
 const STAGE_ORDER = [
   { k: "converting", label: "Converting" },
@@ -40,8 +40,8 @@ function parseTime(str) {
 export default function DraftEditorPage() {
   const { jobId } = useParams();
   const nav = useNavigate();
-  const role = useRole();
-  const allowed = canEditSkill(role);
+  const { can } = useCaps();
+  const allowed = can.editSkills;
   const [job, setJob] = useState(null);
   const [err, setErr] = useState(null);
   const [savingStep, setSavingStep] = useState(false);
@@ -84,7 +84,7 @@ export default function DraftEditorPage() {
           className="text-sm font-ui fs-card px-4 py-3"
           style={{ color: "var(--fs-muted)" }}
         >
-          Switch to Care Manager or Trainer to edit skills.
+          Read only. Draft editing is for Care Manager or Trainer.
         </p>
       </section>
     );
@@ -241,11 +241,13 @@ function Editor({ job, onChange, savingStep, setSavingStep, publishError, setPub
   const removeCheck = (id) =>
     setDraft((d) => ({ ...d, checks: (d.checks || []).filter((c) => c.id !== id) }));
 
-  // Fix #10 — quiz count is free. The editor adds and removes questions
-  // directly; publish accepts 0..N (each must still have 3 choices).
+  // Stage 1 — bounded 2..2. Add is disabled at 2+, Remove is disabled at 2-.
+  const QUIZ_MIN = 2;
+  const QUIZ_MAX = 2;
   const addQuiz = () =>
     setDraft((d) => {
       const existing = d.quiz || [];
+      if (existing.length >= QUIZ_MAX) return d;
       // Pick next free `qN` id even if the user removed middle items.
       let n = existing.length + 1;
       const taken = new Set(existing.map((q) => q.id));
@@ -259,7 +261,11 @@ function Editor({ job, onChange, savingStep, setSavingStep, publishError, setPub
       };
     });
   const removeQuiz = (id) =>
-    setDraft((d) => ({ ...d, quiz: (d.quiz || []).filter((q) => q.id !== id) }));
+    setDraft((d) => {
+      const existing = d.quiz || [];
+      if (existing.length <= QUIZ_MIN) return d;
+      return { ...d, quiz: existing.filter((q) => q.id !== id) };
+    });
 
   const save = async () => {
     setSaving(true);
@@ -316,6 +322,56 @@ function Editor({ job, onChange, savingStep, setSavingStep, publishError, setPub
     }
   };
 
+  // Stage 1 — inline publish validation. Blocks the click so the user
+  // sees the error next to the button INSTEAD of the Publish button
+  // silently doing nothing.
+  const localPublishBlockers = useMemo(() => {
+    const reasons = [];
+    const steps = draft?.steps || [];
+    const checks = draft?.checks || [];
+    const quiz = draft?.quiz || [];
+    if (!steps.length) reasons.push("At least one step is required.");
+    const missingFrame = steps.find((s) => !s.frame_id);
+    if (missingFrame) reasons.push(`Step ${missingFrame.n} is missing a frame.`);
+    if (!checks.length) reasons.push("At least one check is required.");
+    if (quiz.length !== QUIZ_MIN) {
+      reasons.push(`Quiz must have exactly ${QUIZ_MIN} questions (got ${quiz.length}).`);
+    }
+    for (const q of quiz) {
+      const choices = q.choices || [];
+      if (choices.length !== 3 || choices.some((c) => !String(c || "").trim())) {
+        reasons.push("Each quiz question needs 3 non-empty choices.");
+        break;
+      }
+      if (
+        typeof q.answer_index !== "number" ||
+        q.answer_index < 0 ||
+        q.answer_index > 2
+      ) {
+        reasons.push("Each quiz question needs a correct answer selected.");
+        break;
+      }
+      if (!String(q.prompt || "").trim()) {
+        reasons.push("Each quiz question needs a prompt.");
+        break;
+      }
+    }
+    // Step / check text completeness.
+    const emptyStep = steps.find(
+      (s) => !String(s.title || "").trim() || !String(s.instruction || "").trim(),
+    );
+    if (emptyStep) {
+      reasons.push(`Step ${emptyStep.n} needs a title and instruction.`);
+    }
+    const emptyCheck = checks.find((c) => !String(c.description || "").trim());
+    if (emptyCheck) {
+      reasons.push(`Check ${emptyCheck.id} needs a description.`);
+    }
+    return reasons;
+  }, [draft]);
+
+  const canPublish = localPublishBlockers.length === 0;
+
   return (
     <div data-testid="draft-editor" className="space-y-5">
       <div className="fs-card p-4 space-y-3">
@@ -361,10 +417,17 @@ function Editor({ job, onChange, savingStep, setSavingStep, publishError, setPub
                 ) : (
                   <div
                     data-testid={`editor-step-frame-${s.n}`}
-                    className="w-32 h-20 rounded-md flex items-center justify-center text-xs font-ui"
-                    style={{ background: "var(--fs-accent)", color: "var(--fs-muted)" }}
+                    className="w-32 h-20 rounded-md flex flex-col items-center justify-center text-center font-ui border border-dashed"
+                    style={{
+                      borderColor: "var(--fs-border)",
+                      color: "var(--fs-muted)",
+                      background: "transparent",
+                    }}
                   >
-                    no frame
+                    <span aria-hidden="true" style={{ fontSize: "1.1rem", lineHeight: 1 }}>
+                      🖼
+                    </span>
+                    <span className="text-[10px] mt-1">No image yet</span>
                   </div>
                 )}
                 <div className="flex-1 min-w-0 space-y-2">
@@ -466,13 +529,31 @@ function Editor({ job, onChange, savingStep, setSavingStep, publishError, setPub
 
       <section>
         <div className="flex items-center justify-between mb-2">
-          <h2 className="text-lg font-semibold">Quiz</h2>
+          <h2 className="text-lg font-semibold">
+            Quiz
+            <span
+              className="ml-2 text-xs font-ui"
+              style={{
+                color:
+                  draft.quiz.length === QUIZ_MIN
+                    ? "var(--fs-muted)"
+                    : "var(--fs-fail)",
+              }}
+              data-testid="editor-quiz-count"
+            >
+              {draft.quiz.length} / {QUIZ_MIN}
+            </span>
+          </h2>
           <button
             type="button"
             onClick={addQuiz}
+            disabled={draft.quiz.length >= QUIZ_MAX}
             data-testid="editor-add-quiz"
             className="tap px-3 text-xs font-ui rounded-full border"
-            style={{ borderColor: "var(--fs-border)" }}
+            style={{
+              borderColor: "var(--fs-border)",
+              opacity: draft.quiz.length >= QUIZ_MAX ? 0.45 : 1,
+            }}
           >
             + Add question
           </button>
@@ -491,10 +572,18 @@ function Editor({ job, onChange, savingStep, setSavingStep, publishError, setPub
                 <button
                   type="button"
                   onClick={() => removeQuiz(q.id)}
+                  disabled={draft.quiz.length <= QUIZ_MIN}
                   data-testid={`editor-quiz-remove-${q.id}`}
                   className="text-xs font-ui tap px-2"
-                  style={{ color: "var(--fs-fail)" }}
-                  title="Remove question"
+                  style={{
+                    color: "var(--fs-fail)",
+                    opacity: draft.quiz.length <= QUIZ_MIN ? 0.4 : 1,
+                  }}
+                  title={
+                    draft.quiz.length <= QUIZ_MIN
+                      ? `At least ${QUIZ_MIN} questions required`
+                      : "Remove question"
+                  }
                 >
                   Remove
                 </button>
@@ -537,7 +626,7 @@ function Editor({ job, onChange, savingStep, setSavingStep, publishError, setPub
               data-testid="editor-quiz-empty"
               style={{ color: "var(--fs-muted)" }}
             >
-              No quiz questions. (Optional — add any number you'd like.)
+              No quiz questions yet. Publish requires exactly {QUIZ_MIN}.
             </li>
           ) : null}
         </ul>
@@ -569,6 +658,26 @@ function Editor({ job, onChange, savingStep, setSavingStep, publishError, setPub
         </p>
       ) : null}
 
+      {/* Stage 1 — inline validation surfaced NEXT to the Publish button
+          so the user never sees it silently refuse. */}
+      {localPublishBlockers.length > 0 ? (
+        <ul
+          className="fs-card fs-divider"
+          data-testid="editor-publish-blockers"
+        >
+          {localPublishBlockers.map((r, i) => (
+            <li
+              key={i}
+              className="px-3 py-2 text-xs font-ui"
+              style={{ color: "var(--fs-fail)" }}
+              data-testid={`editor-publish-blocker-${i}`}
+            >
+              {r}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+
       <div className="flex gap-3">
         <button
           type="button"
@@ -583,9 +692,15 @@ function Editor({ job, onChange, savingStep, setSavingStep, publishError, setPub
         <button
           type="button"
           onClick={publish}
+          disabled={!canPublish || saving}
           data-testid="editor-publish-btn"
           className="tap px-4 rounded-full text-sm font-ui flex-1"
-          style={{ background: "var(--fs-primary)", color: "var(--fs-primary-fg)" }}
+          style={{
+            background: "var(--fs-primary)",
+            color: "var(--fs-primary-fg)",
+            opacity: canPublish && !saving ? 1 : 0.55,
+          }}
+          title={canPublish ? "Publish" : "Fix the issues above first"}
         >
           Publish
         </button>
