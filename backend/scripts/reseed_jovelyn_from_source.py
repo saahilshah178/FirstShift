@@ -42,6 +42,7 @@ from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorGridFSBucket  # 
 
 from media.encode import cut_segment  # noqa: E402
 from media.store import MediaStore  # noqa: E402
+from features.grading.clamp import clamp_check_times  # noqa: E402
 
 logger = logging.getLogger("firstshift.scripts.reseed_jovelyn")
 
@@ -83,12 +84,20 @@ async def run(source_path: Path, *, start_s: float, duration_s: float) -> dict:
             clip_bytes, "video/mp4", filename=f"{uuid.uuid4().hex}.mp4"
         )
 
+    # Re-clamp the seeded check timestamps to the new clip length so a
+    # longer real clip pushes them back out (and a shorter one clamps
+    # them in).
+    checks = clamp_check_times(
+        attempt.get("checks") or [],
+        clip_duration=duration_s,
+    )
     await db.attempts.update_one(
         {"_id": attempt["_id"]},
         {"$set": {
             "clip_id": new_clip_id,
             "clip_source": "cut-from-source",
             "duration": round(duration_s, 3),
+            "checks": checks,
         }},
     )
     client.close()

@@ -1,5 +1,126 @@
 # FirstShift — Changelog
 
+## Stage 1 fixups (2026-02-25)
+
+Tester surfaced 4 fixups + 1 side-effect to undo. Scope limited; no new
+Stage-2 work mixed in.
+
+### Items
+
+- **FIXUP 1 — Honest "No image yet" renders (T7).** Seed used to
+  generate synthetic 320×200 PNG frames for every step on every skill —
+  the UI then rendered those as the step thumbnail, which is exactly
+  the placeholder-image-block the brief forbids. Seed now sets every
+  step's `frame_id` to `None` on skills without a source video (ALL
+  seeded skills, since none ship with video today). One-shot
+  idempotent migration under `backend/scripts/stage1_cleanup.py`
+  nulls `frame_id`s on every pre-existing dirty skill AND deletes the
+  orphan PNG blobs from GridFS (matched by `metadata.content_type ==
+  "image/png"` + `length < 5 KB` + filename pattern
+  `*-step-N.png` + not referenced by any live `skill.steps[].frame_id`).
+  Frontend already shipped the dashed-border placeholder in Stage 1 —
+  `SkillDetailPage` + `DraftEditorPage` now show it on every seed skill.
+
+- **FIXUP 2 — Transfer revert.** The tester uploaded a 30 s test-pattern
+  as the Transfer source video (`video_id: bb9aae93…`) and 4 step
+  frames were re-extracted from it. Fresh re-seed already zeroes
+  `video_id` and all `frame_id`s on Transfer (same path as every
+  other seed skill). The cleanup script additionally deletes the
+  orphan video + its 4 derived jpg frames from GridFS **by uuid**
+  (safe-matched: `metadata.content_type == "image/jpeg"` + filename
+  pattern `*-step-N.jpg` + not referenced by any skill; the video
+  uses its `metadata.uuid` lookup from the pre-revert Transfer doc
+  when a dirty skill is encountered, else matches by filename
+  patterns `attempt-*.mp4` / `*.mp4` with a 32-hex uuid name).
+  Jovelyn's placeholder clip is untouched (separate upload path,
+  separate uuid). Cleanup run output: `orphan_jpg_deleted: 5`,
+  `orphan_mp4_deleted: 12` (includes the tester's bb9aae93 video +
+  11 leftover attempt blobs from prior seed cycles).
+
+- **FIXUP 3 — Role header name clarification.** Code and `CONTRACTS.md`
+  §9 both use `X-Firstshift-Role`; the earlier brief said
+  `X-Agency-Role`. **Code and CONTRACTS win.** Audit found zero
+  `X-Agency-Role` references in `backend/` or `frontend/src/`. The
+  axios interceptor at `frontend/src/api.js:33` already sets
+  `X-Firstshift-Role` on every outbound request, sourced from
+  `localStorage.firstshift.agency_role` via `currentRole()`. Replace
+  Source Video uses `api.post()` so it inherits the header
+  automatically. One Stage-1 bug fixed anyway: the Replace Source
+  Video call passed `Content-Type: multipart/form-data` without a
+  boundary, which breaks some axios/server combinations — removed so
+  axios sets its own multipart Content-Type including the boundary.
+
+- **FIXUP 4 — Clamp Jovelyn's check timestamps to clip duration (T1).**
+  New shared helper `backend/features/grading/clamp.py::clamp_check_times`
+  with signature `clamp_check_times(checks, *, clip_duration, margin=0.2)`.
+  Used by `backend/seed/seed.py` (clamps at seed time against the
+  attempt's own `duration`) and by
+  `backend/scripts/reseed_jovelyn_from_source.py` (re-clamps when the
+  real Chippewa cut lands — a 12 s or 15 s real clip pushes the
+  previously-clamped times back out, since the raw generator output
+  for 5 checks spans 2.5 → 14.9 s). Jovelyn's current (placeholder)
+  attempt times are now `c1=2.50, c2=5.60, c3=8.70, c4=9.80, c5=9.80`
+  — all ≤ `10.0 - 0.2 = 9.80` s.
+
+- **FIXUP 5 — Empty-field path reaches the inline blocker (T3).**
+  Already wired by Stage 1's `localPublishBlockers` useMemo in
+  `DraftEditorPage.js`. Confirmed four empty-field reasons surface
+  via `[data-testid="editor-publish-blockers"]`:
+  - `"Step N needs a title and instruction."` (clear a step title)
+  - `"Check cX needs a description."` (clear a check description)
+  - `"Each quiz question needs 3 non-empty choices."` (clear a quiz option)
+  - `"Each quiz question needs a prompt."` (clear a quiz prompt)
+  Each disables the Publish button and shows the full reason list
+  inline. **Manual test:** open any draft, delete the first
+  character of Step 1's title, confirm the Publish button goes to
+  `opacity 0.55` and `[data-testid="editor-publish-blockers"]`
+  mounts with the matching reason.
+
+### Files touched
+
+```
+A  backend/features/grading/clamp.py                   (shared helper)
+A  backend/scripts/stage1_cleanup.py                   (one-shot migration)
+M  backend/seed/seed.py                                (no PNGs; apply clamp)
+M  backend/scripts/reseed_jovelyn_from_source.py       (apply clamp)
+M  frontend/src/features/lessons/SkillDetailPage.js    (drop manual Content-Type)
+M  docs/CHANGELOG.md
+```
+
+### Self-check (ran after fixups)
+
+```
+# Every seed skill — frames all null, video_id null:
+Transfer from bed to wheelchair     video_id=None  frames_all_null=True
+Hand hygiene                        video_id=None  frames_all_null=True
+Blood pressure measurement          video_id=None  frames_all_null=True
+Glove removal                       video_id=None  frames_all_null=True
+
+# Jovelyn's seeded attempt — check times vs. clip duration (10.0 s):
+c1  2.50s OK  pass
+c2  5.60s OK  fail
+c3  8.70s OK  pass
+c4  9.80s OK  unclear
+c5  9.80s OK  pass
+
+# GridFS post-cleanup:
+image/png    count=2    (healthcheck.png × 2 — not step frames)
+video/mp4    count=4    (4 live attempt clips, 0 orphans)
+image/jpeg   count=0    (tester's 5 orphan jpg frames removed)
+```
+
+### Item A (unchanged)
+
+Jovelyn's clip stays the 10 s honest placeholder. yt-dlp retry not
+attempted — pod egress to googlevideo.com is confirmed-blocked.
+The real Chippewa video reaches the pod via one of the three paths
+listed in the Stage 1 reply, then `python -m
+backend.scripts.reseed_jovelyn_from_source /path/to/source.mp4` swaps
+in a 12 s cut (defaults) and the clamp helper reapplies to the longer
+duration.
+
+
+
 ## Stage 1 — Demo data and content (2026-02-25)
 
 Filming-ready demo pass. New entry point script

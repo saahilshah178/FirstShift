@@ -77,9 +77,10 @@ export default function SkillDetailPage() {
     try {
       const fd = new FormData();
       fd.append("file", file);
-      await api.post(`/lessons/skills/${skillId}/replace_source_video`, fd, {
-        headers: { "Content-Type": "multipart/form-data" },
-      });
+      // Let axios set its own multipart boundary — explicitly setting
+      // Content-Type without a boundary breaks server parsing on some
+      // runtimes.
+      await api.post(`/lessons/skills/${skillId}/replace_source_video`, fd);
       await load();
     } catch (e) {
       const detail = e?.response?.data?.detail;

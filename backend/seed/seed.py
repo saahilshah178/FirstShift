@@ -44,6 +44,7 @@ from PIL import Image, ImageDraw  # noqa: E402
 
 from media.encode import encode_mp4  # noqa: E402
 from media.store import MediaStore  # noqa: E402
+from features.grading.clamp import clamp_check_times  # noqa: E402
 from util.access_code import retry_on_duplicate  # noqa: E402
 
 logger = logging.getLogger("firstshift.seed")
@@ -419,16 +420,17 @@ async def seed() -> dict:
     ]
     await db.agencies.insert_many(list(agencies))
 
-    # 3. Skills + reference frame uploads.
+    # 3. Skills. Stage-1 brief forbids placeholder-image blocks on skills
+    #    without a source video — ALL seed skills ship WITHOUT a video, so
+    #    every step's `frame_id` stays `None` and the UI renders the honest
+    #    "No image yet" state. A Care Manager can upload the real video via
+    #    `POST /api/lessons/skills/{id}/replace_source_video` and that path
+    #    will populate `frame_id`s from real frames.
     skills = _skills_template()
-    for s_idx, skill in enumerate(skills):
-        for st_idx, step in enumerate(skill["steps"]):
-            color = _PALETTE[(s_idx * 2 + st_idx) % len(_PALETTE)]
-            png = _frame_png(skill["title"], step["n"], color)
-            frame_uuid = await store.save(
-                png, "image/png", filename=f"{skill['title']}-step-{step['n']}.png"
-            )
-            step["frame_id"] = frame_uuid
+    for skill in skills:
+        skill["video_id"] = None
+        for step in skill["steps"]:
+            step["frame_id"] = None
     await db.skills.insert_many(list(skills))
     skill_ids = [s["_id"] for s in skills]
 
@@ -564,6 +566,13 @@ async def seed() -> dict:
                 "seen": result != "unclear",
                 "note": "",
             })
+        attempt_duration = 10.0 if plan["clip_source"] == "jovelyn-transfer" else 2.5
+        # Clamp any check that would land past the end of this (placeholder)
+        # clip so a sign-off reviewer never jumps past playback. The real
+        # Chippewa cut will be longer than 10 s and the untouched offsets
+        # fit inside it (reseed_jovelyn_from_source re-runs the clamp with
+        # the real duration anyway).
+        checks = clamp_check_times(checks, clip_duration=attempt_duration)
         created_at = (now - timedelta(days=(len(attempts_plan) - i))).isoformat()
         graded_at = (now - timedelta(days=(len(attempts_plan) - i), hours=-1)).isoformat()
         attempts.append({
@@ -572,7 +581,7 @@ async def seed() -> dict:
             "skill_id": skill["_id"],
             "clip_id": clip_uuid,
             "clip_source": clip_source,
-            "duration": 10.0 if plan["clip_source"] == "jovelyn-transfer" else 2.5,
+            "duration": attempt_duration,
             "checks": checks,
             "overall": plan["overall"],
             "status": plan["status"],
