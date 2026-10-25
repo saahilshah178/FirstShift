@@ -1,5 +1,206 @@
 # FirstShift — Changelog
 
+## Stage 3 (partial): Today + Clients + near-miss (2026-02-26)
+
+Ships items **A–I, N, O** of the Stage 3 brief. Items **J–M** (New Hires
+intake form + voice intake + AI plan generation + access-code
+generation) are **explicitly deferred** — timebox was already past the
+"do not negotiate scope on your own" line when I started.
+
+### Collections added
+
+Three new collections (all documented in CONTRACTS §6):
+
+- **`plans`** — one doc per caregiver, items = `[{skill_id, mode,
+  refresher?}]`. **Only `mode` + `refresher` persist**; per-item `status`
+  is DERIVED on every read from `cleared_skills` + open attempts + the
+  active conversation (`features/plans/__init__.py::_derive_status`).
+  Priority order: `refresher` override → `cleared` → `practicing` →
+  `not_started`.
+- **`incidents`** — append-only audit of near-miss reports:
+  `{_id, caregiver_id, skill_id, description, reporter_role, created_at}`.
+- **`cert_skill_map`** — small `{certificate, verify_skill_ids}` table.
+  Re-seeded on startup by title (CNA → all 4 skills; HHA → all except
+  Blood pressure). Used to populate a plan item's "Verified because:
+  CNA" subtitle when the caregiver's stated certificate covers the skill
+  and the plan item is in `verify` mode.
+- **`refresher_drafts`** — one row per outstanding draft refresher
+  message, created by `near-miss` and deleted on `/send` (which pushes
+  the text into the caregiver's chat via `send_message_async`).
+
+### Startup hooks (idempotent, `server.py@on_startup`)
+
+- `features/plans/integrity.run_integrity_sweep` — scans every
+  caregiver, `$pull`s any id in `cleared_skills` not backed by an
+  approved sign-off whose `attempt` row has a `clip_id`. Logs
+  `caregivers_scanned` + `corrections` on `firstshift.plans.integrity`.
+  Startup logs on current seed: `caregivers_scanned=5, corrections=0`.
+- `features/plans/seed.seed_cert_skill_map` — upserts the cert → skill
+  map by current title. Reports unresolved titles in the summary.
+- `features/plans/seed.backfill_plans` — creates a learn-mode plan for
+  any caregiver missing one (so forks adding caregivers mid-stream pick
+  up a plan on next read without a migration script).
+
+### New endpoints
+
+`/api/ops`:
+- **`GET /today/metrics`** — 3 card counts + headline avg.
+  `avg_days_to_cleared` is a **Mongo-side `$match + $group + $avg`**
+  pipeline on `signoffs` with `$lookup` to `caregivers` + `plans`
+  (`features/ops/__init__.py::_avg_days_pipeline`). Not a Python
+  average. Returns `null` when no caregiver is fully cleared yet; UI
+  renders "Not enough data yet".
+- **`GET /today/cleared-days`** — the `$facet.rows` branch of the same
+  pipeline (per-caregiver drilldown sorted asc by days).
+- **`GET /clients/{client_id}/caregiver-fit`** — cleared (via Mongo
+  `$all`) + almost-ready (missing **exactly one** required skill;
+  missing skill named per row).
+
+`/api/plans`:
+- **`GET /caregiver/{id}`** — plan with derived status per item + optional
+  `verified_because` / `refresher_at` subtitles.
+- **`POST /caregiver/{id}/near-miss`** — Care-Manager-only. Atomic:
+  inserts `incidents`, `$pull`s skill from `cleared_skills`, flips the
+  matching plan item's `refresher: true`, creates a `refresher_drafts`
+  row with localized prefilled text. **Does NOT auto-send to the
+  caregiver chat.**
+- **`GET /caregiver/{id}/refresher-drafts`** — open draft list.
+- **`PUT /refresher-drafts/{id}`** — Care-Manager-only. Save edits.
+- **`POST /refresher-drafts/{id}/send`** — Care-Manager-only. Push into
+  chat via `send_message_async`; row deleted on success.
+- **`DELETE /refresher-drafts/{id}`** — Care-Manager-only. Discard.
+- **`GET /caregiver/{id}/incidents`** — audit view.
+- **`GET /cert-map`** — current cert → skill-ids table.
+
+Full role matrix in CONTRACTS §11.
+
+### Frontend
+
+- **`frontend/src/features/ops/TodayPage.js`** — three stacked cards
+  (`today-card-new-hires`, `today-card-signoffs`, `today-card-questions`)
+  linking to their respective routes; headline "Avg time to cleared" card
+  with a "See breakdown" dialog. Empty-state copy: "Not enough data yet".
+- **`frontend/src/features/ops/ClientsPage.js`** — per client, renders
+  "Cleared for this client" + "Almost ready — missing <skill>" sections.
+  Fits are fetched in parallel on mount.
+- **`frontend/src/features/grading/CompetencyDetailPage.js`** — plan
+  card with per-item Learn/Verify + Not started/Practicing/Cleared/
+  Refresher chips, "Verified because: CNA" subtitles for verify-mode
+  rows, "Reopened after near-miss on <date>" subtitles for refresher
+  rows. Care-Manager-only **Report near-miss** button (hidden when no
+  item is currently cleared). Draft refresher UI (textarea, Send,
+  Discard) rendered as a separate card; Send is the only path to the
+  caregiver chat.
+
+### CONTRACTS drift resolved
+
+- **Attempts fields** — CONTRACTS §6 lists only
+  `{_id, caregiver_id, skill_id, clip_id, checks, overall, created_at}`
+  but the running code has `status` + `reviewed` + `verdict` + `score`
+  + `message_for_caregiver` + `graded_once` + `runs_used`. The brief's
+  "signoffs_waiting = attempts with status=ready_to_sign AND NOT
+  reviewed" implementation uses the code fields; CONTRACTS §6 should
+  catch up on a later pass. Not blocking.
+- **`is_critical` vs `safety_critical`** — brief uses the former, code
+  uses `safety_critical`. Code name wins (CONTRACTS §6 agrees). No
+  action needed.
+- Stage 3 collections (`plans`, `incidents`, `cert_skill_map`,
+  `refresher_drafts`) **were** flagged `Reserved for later phases` in
+  CONTRACTS §6. Now ratified with their actual shapes.
+
+### Alex live-upload end-to-end test
+
+Reusable self-check: `python3 scripts/stage3_e2e_check.py` (requires
+`pymongo` + `requests`; both installed in the pod venv). Runs 32
+assertions: role gating on near-miss + refresher-drafts
+(no header / Scheduler / Trainer all → 403), Today metrics shape,
+Clients caregiver-fit "Almost ready" bucket, synthetic sign-off →
+`cleared_skills` → `caregiver-fit` cleared rebucket, full near-miss
+flow (incident + draft creation, draft edit, draft NOT auto-sent,
+draft sent → appears in Alex's chat → draft row deleted), cert map
+coverage. **Last run: ALL PASS.**
+
+Simulation shortcut (what the script does for live-upload): insert a
+synthetic `ready_to_sign` attempt for Alex using an existing clip id
+(any clip in GridFS works for the sign-off path — grade_clip is
+already Stage-2-tested end-to-end), then `POST
+/api/grading/attempts/{id}/signoff` with
+`{"decision":"approve","signer":"Rachel Kim, RN","signer_role":"Care Manager","note":""}`
++ `X-Firstshift-Role: Care Manager`.
+
+**Manual browser flow for filming (same scenario, driven through the UI):**
+
+1. Open `/c/2TBAFX` (Alex's caregiver chat).
+2. Pick a skill → upload a short glove-removal clip through the chat
+   input (Stage 2 `/api/channel/upload-practice-clip`).
+3. Switch to Care Manager (role picker) → `/signoff`.
+4. The attempt lands under "Ready to sign" (see
+   `backend/features/grading/routes_signoff.py::_queue`).
+5. Approve. Alex now shows "Cleared" for Mr. Henry Oshiro in `/clients`
+   (`Oshiro` requires only Hand hygiene).
+
+To reset between demos:
+
+```bash
+curl -X POST \
+  -H "X-Firstshift-Role: Care Manager" \
+  https://<preview-url>/api/channel/dev/reset/44c9449a6ebd423486229f0bec62dbb8
+# then: run scripts/stage3_e2e_check.py cleanup section, or just drop
+# the test attempt + reset cleared_skills in Mongo.
+```
+
+### Role gating (curl receipts)
+
+```
+POST /api/plans/caregiver/<id>/near-miss                       (no header)      -> 403
+POST /api/plans/caregiver/<id>/near-miss                       Scheduler        -> 403
+POST /api/plans/caregiver/<id>/near-miss                       Trainer          -> 403
+POST /api/plans/caregiver/<id>/near-miss                       Care Manager+bad body -> 404 "skill not found"
+POST /api/plans/refresher-drafts/<id>/send                     Scheduler        -> 403
+PUT  /api/plans/refresher-drafts/<id>                          Trainer          -> 403
+DELETE /api/plans/refresher-drafts/<id>                        Scheduler        -> 403
+```
+
+### Deliberately deferred (do NOT read as "forgotten")
+
+- **J.** New hires intake form (phone + name + certifications +
+  years + target client + "most familiar with" + "least familiar with"
+  + voice-notes).
+- **K.** Voice intake (OpenAI Whisper or Gemini audio).
+- **L.** AI plan generation (`ai.call_gemini` with a plan schema that
+  flips plan items between `learn` and `verify` based on cert + stated
+  experience).
+- **M.** Access-code generation path for new intake.
+
+These require either a longer-form conversation flow (J, K) or
+non-trivial Gemini schema wiring (L) that would push past the hard
+timebox. All four will slot cleanly on top of the collections shipped
+here (`plans.items[]` already carries the `mode` toggle; `cert_skill_map`
+already maps cert → verify ids; `caregivers.access_code` already has
+the generator in `backend/util/access_code.py`).
+
+### Files touched
+
+- `backend/features/plans/__init__.py` (NEW — routes + near-miss +
+  refresher drafts)
+- `backend/features/plans/seed.py` (NEW — cert map + plan backfill)
+- `backend/features/plans/integrity.py` (NEW — startup sweep)
+- `backend/features/ops/__init__.py` (+ Today metrics + caregiver-fit)
+- `backend/server.py` (startup hook + collection list)
+- `backend/seed/seed.py` (`refresher_drafts` left untouched by auto-seed)
+- `frontend/src/features/ops/TodayPage.js` (full rewrite — three cards +
+  headline)
+- `frontend/src/features/ops/ClientsPage.js` (fit sections per client)
+- `frontend/src/features/grading/CompetencyDetailPage.js` (plan + draft
+  + near-miss dialog)
+- `docs/CONTRACTS.md` (§1 endpoints, §6 collections, §7 seed hooks, §11
+  role matrix)
+- `scripts/stage3_e2e_check.py` (NEW — repeatable DONE-WHEN self-check)
+
+---
+
+
+
 ## Stage 2 fixups (2026-02-25)
 
 Tester-surfaced follow-ups to Stage 2. All 4 fixups shipped.

@@ -50,7 +50,8 @@ from util.access_code import retry_on_duplicate  # noqa: E402
 logger = logging.getLogger("firstshift.seed")
 
 # Collections this script owns (wiped & re-seeded on every run).
-_OWNED = ["agencies", "caregivers", "clients", "skills", "attempts", "signoffs"]
+_OWNED = ["agencies", "caregivers", "clients", "skills", "attempts", "signoffs",
+          "plans", "incidents", "cert_skill_map", "refresher_drafts"]
 
 
 # ---------- helpers ----------

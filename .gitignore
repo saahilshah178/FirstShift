@@ -93,3 +93,7 @@ mobile/.metro-cache/
 credentials.json
 *.key
 .credentials
+.cache_bad.txt
+.emergent/testing/browser_runs/
+/test_reports/
+/.cache_bad.txt

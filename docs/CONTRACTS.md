@@ -43,6 +43,17 @@ Current features: `ops`, `lessons`, `grading`, `questions`, `channel`,
 | `GET /api/questions/policies`              | See **§1b**.                                                      |
 | `GET /api/caregivers/list`                 | See **§1a — Caregivers endpoint shapes** below.                   |
 | `GET /api/caregivers/by-code/{code}`       | See **§1a — Caregivers endpoint shapes** below. Code is upper-cased server-side. |
+| `GET /api/ops/today/metrics`               | 3 card counts + headline avg-days-to-cleared (Mongo `$match + $group + $avg` on `signoffs`). `avg_days_to_cleared` is `null` when no caregiver is fully cleared yet (UI shows "Not enough data yet"). Shape: `{cards:{new_hires_in_progress,signoffs_waiting,open_questions}, avg_days_to_cleared: float\|null, fully_cleared_count: int}` |
+| `GET /api/ops/today/cleared-days`          | Per-caregiver drilldown behind the headline. `{rows:[{caregiver_id,name,hired_at,fully_cleared_at,days}]}` sorted asc by `days`. |
+| `GET /api/ops/clients/{client_id}/caregiver-fit` | Clients page "fit" buckets. `{client, cleared:[…], almost_ready:[{…,missing_skill_id,missing_skill_title}]}`. Cleared uses Mongo `$all`; almost_ready = caregivers missing **exactly one** required skill. |
+| `GET /api/plans/caregiver/{caregiver_id}`  | Caregiver's plan with per-item derived status + optional `verified_because` / `refresher_at` / `refresher_reason`. See §6 `plans`. |
+| `GET /api/plans/caregiver/{caregiver_id}/refresher-drafts` | Outstanding draft refresher messages (not yet sent to chat). |
+| `GET /api/plans/caregiver/{caregiver_id}/incidents` | Near-miss audit trail (append-only). |
+| `GET /api/plans/cert-map`                  | Cert → verify-skill-ids map. |
+| `POST /api/plans/caregiver/{caregiver_id}/near-miss` | **Care-Manager-only** (`X-Firstshift-Role`). Body: `{skill_id, description}`. Atomic: inserts `incidents`, `$pull`s skill from `cleared_skills`, sets `plan.items[].refresher=true`, creates a `refresher_drafts` row with localized prefilled text. **Does NOT** push to caregiver chat — Send is a separate action. |
+| `PUT  /api/plans/refresher-drafts/{draft_id}`       | **Care-Manager-only**. Body: `{text}`. Save edits. |
+| `POST /api/plans/refresher-drafts/{draft_id}/send`  | **Care-Manager-only**. Pushes draft text into caregiver chat via `send_message_async`, deletes the draft row. |
+| `DELETE /api/plans/refresher-drafts/{draft_id}`     | **Care-Manager-only**. Discard. |
 
 ### 1a. Caregivers endpoint shapes (pinned)
 
@@ -499,16 +510,31 @@ Access codes: 6 chars from `ABCDEFGHJKMNPQRSTUVWXYZ23456789` (no
 | `conversations` | `_id`, `caregiver_id`, `channel` (`"web"`; `"whatsapp"` reserved), `state` (`idle|in_lesson|quiz|awaiting_video|awaiting_result`), `skill_id: str|null`, `step_index: int`, `quiz_index: int`, `correct_count: int`, `pending_attempt_id: str|null`, `greeted: bool`, `updated_at` (shipped on `channel/questions`) |
 | `messages`   | `_id`, `caregiver_id`, `direction` (`'in'`\|`'out'`), `channel` (`"web"`), `text`, `media_id: str|null`, `created_at` (shipped on `channel/questions`) |
 | `lesson_jobs` | `_id`, `status` (`converting|analyzing|extracting_frames|ready|publishing|published|failed`), `video_id`, `source_credit`, `skill_id: str|null`, `duration_s`, `draft` (shape per CONTRACTS §1c), `problems[]`, `draft_rev: int`, `created_at`, `updated_at`, heartbeat fields (shipped on `lessons/record`; owned by that feature). Published rows are wiped on publish — see §1c. |
-| `incidents`  | Reserved for later phases.                                                                                                                                                                                  |
-| `plans`      | Reserved for later phases.                                                                                                                                                                                  |
+| `incidents`  | `_id`, `caregiver_id`, `skill_id`, `description`, `reporter_role` (`"Care Manager"`), `created_at`. Shipped on **Stage 3**. Audit trail for near-miss reports. Append-only; nothing deletes rows. |
+| `plans`      | `_id`, `caregiver_id`, `items: [{skill_id, mode: "learn"\|"verify", refresher?: bool}]`, `created_at`, `updated_at`. Shipped on **Stage 3**. One doc per caregiver. **Only `mode` + `refresher` are persisted**; per-item `status` is DERIVED on every read (`cleared_skills` ∩ open attempts ∩ active conversation) — never trust a persisted status alone (see `features/plans/__init__.py::_derive_status`). |
+| `refresher_drafts` | `_id`, `caregiver_id`, `skill_id`, `incident_id`, `text`, `created_at`, `updated_at?`. Shipped on **Stage 3**. One row per outstanding draft refresher message — Care Manager edits text, taps Send to push into chat (`send_message_async`), or Discards. Row is deleted on Send. |
+| `cert_skill_map`   | `_id`, `certificate` (`"CNA"`\|`"HHA"`), `verify_skill_ids: [skill_id]`, `updated_at`. Shipped on **Stage 3**. Re-seeded idempotently at startup from title-based rules in `features/plans/seed.py`. Used to populate a plan item's `verified_because: "<cert>"` subtitle. |
 
 ## 7. Seed
 
 `backend/seed/seed.py` is **idempotent**. On run (or auto-run at
 startup when the `agencies` collection is empty), it wipes only the
-collections it owns (`agencies`, `caregivers`, `clients`, `skills`,
-`attempts`, `signoffs`) and re-inserts. `questions`, `cards`,
-`incidents`, `plans` are left untouched.
+collections it owns and re-inserts. Owned (wiped on every re-seed):
+`agencies`, `caregivers`, `clients`, `skills`, `attempts`, `signoffs`,
+`plans`, `incidents`, `cert_skill_map`, `refresher_drafts`. **Not
+owned** (preserved across re-seeds): `questions`, `cards`,
+`conversations`, `messages`, `lesson_jobs`.
+
+Stage 3 hooks (also run on every startup, idempotent):
+
+- `features/plans/integrity.run_integrity_sweep` scans every caregiver
+  and removes any id in `cleared_skills` that is **not** backed by an
+  approved sign-off whose attempt row has a `clip_id`. Logs
+  `caregivers_scanned` + `corrections` on `firstshift.plans.integrity`.
+- `features/plans/seed.seed_cert_skill_map` upserts `cert_skill_map`
+  rows for `CNA` / `HHA` by resolving current skill titles to ids.
+- `features/plans/seed.backfill_plans` creates a learn-mode `plans`
+  row (covering every active skill) for any caregiver missing one.
 
 Run manually: `python -m backend.seed.seed` from the repo root.
 
@@ -616,6 +642,11 @@ interceptor pair in `frontend/src/api.js`. Full matrix:
 | `PUT  /api/lessons/skills/{id}/translations/{lang}`            | ✅           | ✅      | 403       |
 | `POST /api/lessons/skills/{id}/translations/{lang}/review`     | ✅           | ✅      | 403       |
 | `POST /api/lessons/skills/{id}/translations/retry`             | ✅           | ✅      | 403       |
+| `POST /api/plans/caregiver/{caregiver_id}/near-miss`           | ✅           | 403     | 403       |
+| `PUT  /api/plans/refresher-drafts/{draft_id}`                  | ✅           | 403     | 403       |
+| `POST /api/plans/refresher-drafts/{draft_id}/send`             | ✅           | 403     | 403       |
+| `DELETE /api/plans/refresher-drafts/{draft_id}`                | ✅           | 403     | 403       |
+| `POST /api/channel/dev/reset/{caregiver_id}`                   | ✅           | 403     | 403       |
 
 Every GET and every caregiver-side endpoint is open to any role.
 

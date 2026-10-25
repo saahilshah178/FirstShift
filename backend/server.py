@@ -131,6 +131,15 @@ async def _on_startup() -> None:
         await seed_if_empty()
     except Exception as exc:  # noqa: BLE001 — never crash on seed failure
         logger.exception("auto-seed failed: %s", exc)
+    # Stage 3 — integrity sweep + plans backfill + cert-map seed. All
+    # idempotent; safe on every start.
+    try:
+        from features.plans.integrity import run_integrity_sweep
+        from features.plans.seed import startup as plans_startup
+        await run_integrity_sweep()
+        await plans_startup()
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("stage3 startup hooks failed: %s", exc)
 
 
 @app.on_event("shutdown")
