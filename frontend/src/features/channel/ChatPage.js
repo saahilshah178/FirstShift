@@ -11,7 +11,9 @@ export default function ChatPage() {
   const [convState, setConvState] = useState(null);
   const [uploading, setUploading] = useState(false);
   const videoInputRef = useRef(null);
+  const inputRef = useRef(null);
   const scrollRef = useRef(null);
+  const lastMessageIdRef = useRef(null);
 
   const load = useCallback(async () => {
     try {
@@ -37,12 +39,18 @@ export default function ChatPage() {
     return () => clearInterval(t);
   }, [load]);
 
-  // Auto-scroll on new messages.
+  // Auto-scroll only when a NEW message arrives (watching length alone
+  // misses the case where polling returns the same count but with an
+  // edited last message, and watching the array reference would scroll
+  // every poll even if nothing changed). Tracks last message id.
   useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
-  }, [messages.length]);
+    const last = messages[messages.length - 1];
+    if (!last || !scrollRef.current) return;
+    const id = last.id || last._id || last.at;
+    if (lastMessageIdRef.current === id) return;
+    lastMessageIdRef.current = id;
+    scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+  }, [messages]);
 
   const sendText = async (payload) => {
     const content = (payload ?? text).trim();
@@ -61,6 +69,11 @@ export default function ChatPage() {
       setErr(typeof detail === "string" ? detail : e?.message || "failed");
     } finally {
       setSending(false);
+      // Keep the composer textarea focused so repeated quick-reply taps
+      // + manual typing feel like one continuous conversation.
+      if (inputRef.current) {
+        inputRef.current.focus({ preventScroll: true });
+      }
     }
   };
 
