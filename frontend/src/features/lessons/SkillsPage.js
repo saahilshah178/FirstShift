@@ -1,13 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api } from "@/api";
-
-const ROLE_KEY = "firstshift.agency_role";
-
-function useCareManagerGate() {
-  const [role] = useState(() => localStorage.getItem(ROLE_KEY) || "Care Manager");
-  return role === "Care Manager";
-}
+import { useRole, canRecordSkill } from "@/hooks/useRole";
 
 function stageLabel(status) {
   switch (status) {
@@ -41,7 +35,8 @@ function stageTone(status) {
 
 export default function SkillsPage() {
   const nav = useNavigate();
-  const allowed = useCareManagerGate();
+  const role = useRole();
+  const canRecord = canRecordSkill(role);
   const [skills, setSkills] = useState(null);
   const [jobs, setJobs] = useState([]);
   const [err, setErr] = useState(null);
@@ -51,7 +46,7 @@ export default function SkillsPage() {
       try {
         const [s, j] = await Promise.all([
           api.get("/lessons/skills"),
-          api.get("/lessons/jobs"),
+          canRecord ? api.get("/lessons/jobs") : Promise.resolve({ data: { jobs: [] } }),
         ]);
         setSkills(s.data.skills || []);
         setJobs(j.data.jobs || []);
@@ -59,7 +54,7 @@ export default function SkillsPage() {
         setErr(e?.message || "failed");
       }
     },
-    [],
+    [canRecord],
   );
 
   useEffect(() => {
@@ -76,23 +71,6 @@ export default function SkillsPage() {
     return () => clearInterval(t);
   }, [jobs, load]);
 
-  if (!allowed) {
-    return (
-      <section data-testid="skills-page" className="space-y-4">
-        <header>
-          <h1 className="text-2xl font-semibold">Skills</h1>
-        </header>
-        <p
-          className="text-sm font-ui fs-card px-4 py-3"
-          style={{ color: "var(--fs-muted)" }}
-          data-testid="skills-role-gate"
-        >
-          Switch to Care Manager to record skills.
-        </p>
-      </section>
-    );
-  }
-
   return (
     <section data-testid="skills-page" className="space-y-6">
       <header className="flex items-center justify-between">
@@ -105,19 +83,31 @@ export default function SkillsPage() {
             Every skill a caregiver can be checked on.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={() => nav("/skills/record")}
-          data-testid="record-skill-btn"
-          className="tap px-4 rounded-full font-ui text-sm"
-          style={{
-            background: "var(--fs-primary)",
-            color: "var(--fs-primary-fg)",
-          }}
-        >
-          Record a skill
-        </button>
+        {canRecord ? (
+          <button
+            type="button"
+            onClick={() => nav("/skills/record")}
+            data-testid="record-skill-btn"
+            className="tap px-4 rounded-full font-ui text-sm"
+            style={{
+              background: "var(--fs-primary)",
+              color: "var(--fs-primary-fg)",
+            }}
+          >
+            Record a skill
+          </button>
+        ) : null}
       </header>
+
+      {!canRecord ? (
+        <p
+          className="text-xs font-ui fs-card px-4 py-2"
+          style={{ color: "var(--fs-muted)" }}
+          data-testid="skills-role-note"
+        >
+          Scheduler view — read only. Switch to Care Manager or Trainer to record or edit skills.
+        </p>
+      ) : null}
 
       {err ? (
         <p className="text-sm" style={{ color: "var(--fs-fail)" }} data-testid="skills-error">
@@ -125,7 +115,7 @@ export default function SkillsPage() {
         </p>
       ) : null}
 
-      {jobs.length > 0 ? (
+      {canRecord && jobs.length > 0 ? (
         <section data-testid="jobs-section">
           <h2
             className="text-xs uppercase tracking-wide font-ui mb-2"

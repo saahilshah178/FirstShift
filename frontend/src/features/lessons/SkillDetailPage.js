@@ -1,14 +1,14 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, absoluteUrl } from "@/api";
-
-const ROLE_KEY = "firstshift.agency_role";
+import { useRole, canEditSkill, canArchiveSkill } from "@/hooks/useRole";
 
 export default function SkillDetailPage() {
   const { skillId } = useParams();
   const nav = useNavigate();
-  const role = localStorage.getItem(ROLE_KEY) || "Care Manager";
-  const allowed = role === "Care Manager";
+  const role = useRole();
+  const canEdit = canEditSkill(role);
+  const canArchive = canArchiveSkill(role);
   const [skill, setSkill] = useState(null);
   const [err, setErr] = useState(null);
   const [lang, setLang] = useState("en");
@@ -29,20 +29,6 @@ export default function SkillDetailPage() {
   useEffect(() => {
     load();
   }, [load]);
-
-  if (!allowed) {
-    return (
-      <section className="space-y-3" data-testid="skill-detail-gate">
-        <h1 className="text-2xl font-semibold">Skill</h1>
-        <p
-          className="text-sm font-ui fs-card px-4 py-3"
-          style={{ color: "var(--fs-muted)" }}
-        >
-          Switch to Care Manager to record skills.
-        </p>
-      </section>
-    );
-  }
 
   if (err && !skill) {
     return (
@@ -88,33 +74,37 @@ export default function SkillDetailPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={openEdit}
-            data-testid="skill-edit-btn"
-            className="tap px-3 text-sm font-ui rounded-full border"
-            style={{ borderColor: "var(--fs-border)" }}
-          >
-            Edit skill
-          </button>
-          <button
-            type="button"
-            onClick={async () => {
-              if (!window.confirm(`Archive "${skill.title}"? Caregivers and the Skills list will stop seeing it. You can unarchive later.`)) return;
-              try {
-                await api.delete(`/lessons/skills/${skillId}`);
-                nav("/skills");
-              } catch (e) {
-                const detail = e?.response?.data?.detail;
-                setErr(typeof detail === "string" ? detail : e?.message || "archive failed");
-              }
-            }}
-            data-testid="skill-archive-btn"
-            className="tap px-3 text-sm font-ui rounded-full border"
-            style={{ borderColor: "var(--fs-border)", color: "var(--fs-fail)" }}
-          >
-            Archive
-          </button>
+          {canEdit ? (
+            <button
+              type="button"
+              onClick={openEdit}
+              data-testid="skill-edit-btn"
+              className="tap px-3 text-sm font-ui rounded-full border"
+              style={{ borderColor: "var(--fs-border)" }}
+            >
+              Edit skill
+            </button>
+          ) : null}
+          {canArchive ? (
+            <button
+              type="button"
+              onClick={async () => {
+                if (!window.confirm(`Archive "${skill.title}"? Caregivers and the Skills list will stop seeing it. You can unarchive later.`)) return;
+                try {
+                  await api.delete(`/lessons/skills/${skillId}`);
+                  nav("/skills");
+                } catch (e) {
+                  const detail = e?.response?.data?.detail;
+                  setErr(typeof detail === "string" ? detail : e?.message || "archive failed");
+                }
+              }}
+              data-testid="skill-archive-btn"
+              className="tap px-3 text-sm font-ui rounded-full border"
+              style={{ borderColor: "var(--fs-border)", color: "var(--fs-fail)" }}
+            >
+              Archive
+            </button>
+          ) : null}
           <Link to="/skills" className="text-sm font-ui" data-testid="skill-back">
             Back
           </Link>

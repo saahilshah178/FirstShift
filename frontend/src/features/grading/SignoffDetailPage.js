@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, absoluteUrl } from "@/api";
+import { useRole, canSignoff } from "@/hooks/useRole";
 
 const RESULT_CHIP = {
   pass: "fs-chip fs-chip-pass",
@@ -9,7 +10,6 @@ const RESULT_CHIP = {
 };
 
 const SIGNER_KEY = "firstshift.grading.signer_name";
-const ROLE_KEY = "firstshift.agency_role";
 
 function fmtClipTime(seconds) {
   if (seconds == null) return "—";
@@ -22,12 +22,13 @@ export default function SignoffDetailPage() {
   const { attemptId } = useParams();
   const navigate = useNavigate();
   const videoRef = useRef(null);
+  const role = useRole();
+  const canSign = canSignoff(role);
   const [attempt, setAttempt] = useState(null);
   const [err, setErr] = useState(null);
   const [signer, setSigner] = useState(
     () => localStorage.getItem(SIGNER_KEY) || "",
   );
-  const role = localStorage.getItem(ROLE_KEY) || "";
   const [note, setNote] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [actionErr, setActionErr] = useState(null);
@@ -202,6 +203,16 @@ export default function SignoffDetailPage() {
                   attempt.signoff?.signer ?? "someone"
                 }.`
               : `Current status (${attempt.status}) is not signable.`}
+          </p>
+        </div>
+      ) : !canSign ? (
+        <div
+          className="fs-card p-4"
+          data-testid="signoff-role-gate"
+          style={{ background: "var(--fs-accent)" }}
+        >
+          <p className="font-ui text-sm">
+            Switch to Care Manager to approve or send back this attempt.
           </p>
         </div>
       ) : (

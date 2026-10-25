@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "@/api";
+import { useRole, canAnswerQuestions } from "@/hooks/useRole";
 
 export default function QuestionsPage() {
   const [inbox, setInbox] = useState({ waiting: [], answered: [] });
@@ -120,6 +121,8 @@ function Column({ title, rows, activeId, onPick, tone }) {
 }
 
 function Detail({ question, onDone }) {
+  const role = useRole();
+  const canAnswer = canAnswerQuestions(role);
   const [answer, setAnswer] = useState("");
   const [recState, setRecState] = useState("idle"); // idle | recording | transcribing | ready
   const [recErr, setRecErr] = useState(null);
@@ -223,6 +226,22 @@ function Detail({ question, onDone }) {
             Answered ({question.source})
           </p>
           <p className="text-sm whitespace-pre-wrap">{question.answer}</p>
+        </section>
+      ) : !canAnswer ? (
+        <section
+          className="rounded-lg p-3"
+          style={{ background: "var(--fs-accent)" }}
+          data-testid="question-detail-role-gate"
+        >
+          <p
+            className="text-xs uppercase font-ui tracking-wide mb-1"
+            style={{ color: "var(--fs-warn)" }}
+          >
+            Read only
+          </p>
+          <p className="text-sm">
+            Switch to Care Manager to answer this question.
+          </p>
         </section>
       ) : (
         <>

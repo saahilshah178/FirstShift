@@ -1,8 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, absoluteUrl } from "@/api";
-
-const ROLE_KEY = "firstshift.agency_role";
+import { useRole, canEditSkill } from "@/hooks/useRole";
 
 const STAGE_ORDER = [
   { k: "converting", label: "Converting" },
@@ -41,8 +40,8 @@ function parseTime(str) {
 export default function DraftEditorPage() {
   const { jobId } = useParams();
   const nav = useNavigate();
-  const role = localStorage.getItem(ROLE_KEY) || "Care Manager";
-  const allowed = role === "Care Manager";
+  const role = useRole();
+  const allowed = canEditSkill(role);
   const [job, setJob] = useState(null);
   const [err, setErr] = useState(null);
   const [savingStep, setSavingStep] = useState(false);
@@ -85,7 +84,7 @@ export default function DraftEditorPage() {
           className="text-sm font-ui fs-card px-4 py-3"
           style={{ color: "var(--fs-muted)" }}
         >
-          Switch to Care Manager to record skills.
+          Switch to Care Manager or Trainer to edit skills.
         </p>
       </section>
     );

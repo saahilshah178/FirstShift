@@ -1,11 +1,12 @@
 import React, { useEffect, useState } from "react";
 import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
 import { agencyNav } from "@/featureRegistry";
-import { api } from "@/api";
+import { api, setForbiddenHandler } from "@/api";
+import { ROLES, writeRole } from "@/hooks/useRole";
+import { ToastProvider, useForbiddenToast } from "@/shell/Toasts";
 import { X, UserRound } from "lucide-react";
 
 const ROLE_KEY = "firstshift.agency_role";
-const ROLES = ["Care Manager", "Trainer", "Scheduler"];
 
 export default function AgencyShell({ children, nav }) {
   const navItems = agencyNav(nav);
@@ -16,25 +17,42 @@ export default function AgencyShell({ children, nav }) {
   const [showCaregiverPicker, setShowCaregiverPicker] = useState(false);
 
   useEffect(() => {
-    localStorage.setItem(ROLE_KEY, role);
+    writeRole(role);
   }, [role]);
 
   return (
-    <div className="fs-frame" data-side="agency" data-testid="agency-shell">
-      <TopBar
-        role={role}
-        onRoleChange={setRole}
-        onOpenPicker={() => setShowCaregiverPicker(true)}
-      />
-      <main className="flex-1 px-5 py-5 pb-24" data-testid="agency-main">
-        {children}
-      </main>
-      <BottomNav items={navItems} currentPath={location.pathname} />
-      {showCaregiverPicker ? (
-        <CaregiverPicker onClose={() => setShowCaregiverPicker(false)} />
-      ) : null}
-    </div>
+    <ToastProvider>
+      <ForbiddenToastBridge />
+      <div className="fs-frame" data-side="agency" data-testid="agency-shell">
+        <TopBar
+          role={role}
+          onRoleChange={setRole}
+          onOpenPicker={() => setShowCaregiverPicker(true)}
+        />
+        <main className="flex-1 px-5 py-5 pb-24" data-testid="agency-main">
+          {children}
+        </main>
+        <BottomNav items={navItems} currentPath={location.pathname} />
+        {showCaregiverPicker ? (
+          <CaregiverPicker onClose={() => setShowCaregiverPicker(false)} />
+        ) : null}
+      </div>
+    </ToastProvider>
   );
+}
+
+/**
+ * Hook into the api 403 interceptor so the toast provider in this
+ * subtree receives the forbidden notification. Lives inside the
+ * provider so `useToasts()` resolves.
+ */
+function ForbiddenToastBridge() {
+  const showForbidden = useForbiddenToast();
+  useEffect(() => {
+    setForbiddenHandler(showForbidden);
+    return () => setForbiddenHandler(null);
+  }, [showForbidden]);
+  return null;
 }
 
 function TopBar({ role, onRoleChange, onOpenPicker }) {
