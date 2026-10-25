@@ -1,5 +1,132 @@
 # FirstShift — Changelog
 
+## MVP Hardening Pass — Batch 4 (branch `mvp-hardening`, 2026-10)
+
+UX polish, copy pass, content pass. Nine items (#18 – #26) in eight
+commits. Chat autoscroll keyed on last-message id (fires only on new
+message, not every poll). Questions owner-inbox poll backed off 3s →
+10s; detail column uses `md:grid-cols-[22rem_minmax(0,1fr)]` so long
+answers no longer overflow; `"Answered (owner)" → "Answered by Care
+Manager"` via `sourceLabel()`. Practice list row spacing (`py-3 → py-4`,
+`leading-snug`, `whitespace-nowrap` on step count). Caregiver Lessons
+`"to do"` chip now flips to `"awaiting sign-off"` when the backend's
+new `has_pending_attempt` field is true. Per-step reference-video
+playback on `SkillDetailPage.js`: `<video controls playsInline>` + each
+step frame becomes a `<button>` that seeks to `step.start` and plays
+(test-ids `skill-en-step-play-${n}`). Language flags replaced with
+text chips (`English/Español/Tagalog`, new test-id
+`caregiver-language`). Spanish `tú` + singular `administradora de
+cuidados` convention audited across backend + frontend; pin comment in
+`backend/features/questions/pipeline.py`. Tagalog ✓ verified
+(JSX-level glyph, survives language switching). `Escape` + backdrop
+click close `CaregiverPicker` modal; `aria-labelledby` + explicit X
+`aria-label`. SkillsPage rows wrapped in `<Link>` so step/check counts
+are tappable. **Lowercase `/c/<code>` redirects to uppercase** via
+`navigate(..., { replace: true })`, preserving sub-path + query + hash.
+Removed misleading "Back to agency" button on bad-code 404. Double-
+fetch audit found zero prod-time double fetches; the dev-only
+StrictMode duplicate is documented, no code change. Transfer skill
+content pass to v6: c4 flagged `safety_critical: false` and "Nurse" →
+"The caregiver"; new c6 (`safety_critical: true`) "Non-skid footwear is
+on the patient before they stand." with es/tl translations.
+
+## MVP Hardening Pass — Batch 3 (branch `mvp-hardening`, 2026-10)
+
+Role-based access control. `backend/roles.py` defines
+`Role.{CARE_MANAGER, TRAINER, SCHEDULER}`, an `AGENCY_ROLES` frozenset,
+and `require_role(allowed)` factory that reads `X-Firstshift-Role` via
+`Header(default=None)` and raises 403 with
+`{reason: role_required|role_not_allowed, allowed: [...]}` on miss or
+mismatch. Gated endpoints (full matrix in `docs/merge/mvp-hardening.md`
+and CONTRACTS §11): signoff + question answer/transcribe (Care Manager
+only); lesson writes incl. edit/publish/draft/retry/translate (Care
+Manager + Trainer); archive/unarchive (Care Manager only). Every GET
+and all caregiver-side endpoints remain open. Frontend: `api.js`
+request interceptor attaches the header from `localStorage`; response
+interceptor on 403 fires the shell-registered `onForbidden(payload)`
+→ 403 toast. New `useRole()` hook with capability predicates
+(`canSignoff`, `canArchiveSkill`, `canEditSkill`, `canRecordSkill`,
+`canAnswerQuestions`). Per-page UI hides/disables mutating controls per
+role. `sonner` dropped (yarn/CRA conflict) — native lightweight toast
+provider at `frontend/src/shell/Toasts.js`. **Not real auth** — header
+is client-declared and trivially forgeable; documented as such.
+
+## MVP Hardening Pass — Batch 2 (branch `mvp-hardening`, 2026-10)
+
+Signoff / competency reconciliation + quiz standardization + lazy edit
+idempotency. Signoff send-back path strips orphan clears from
+`caregivers.cleared_skills` (fixes "cleared without approved attempt"
+drift). Lazy competency guard: a competency row is now only rendered
+when the caregiver has at least one approved signoff. Override /
+send-back note renders in competency detail with proper spacing. Quiz
+count unconstrained — editor adds/removes freely. Quiz choice labels
+standardised to `1./2./3.` (removes locale ambiguity vs. `a/b/c`).
+Rear camera opens on `<input capture="environment">` for chat video
+uploads. `POST /api/lessons/skills/{id}/edit` is lazy + idempotent:
+no `lesson_jobs` row is written until the first successful
+`PUT /jobs/{id}/draft`. Seeded skills had null step timestamps —
+backfilled via a new ffprobe script (`backend/scripts/backfill_seeded_timestamps.py`),
+run idempotently. Draft `PUT` body shape pinned in CONTRACTS §1c
+(full-replace semantics, must send whole draft). Draft chip spacing +
+override chip layout polish. Tester-orphan draft row cleaned by
+`backend/scripts/cleanup_orphan_drafts.py` (shipped same batch).
+
+## MVP Hardening Pass — Batch 1 (branch `mvp-hardening`, 2026-10)
+
+Media hardening + content polish. Byte-Range support on
+`GET /api/media/{uuid}`: `Content-Length` + `Accept-Ranges: bytes`
+headers always, `206 Partial Content` on `Range:` requests (fixes
+iOS/Safari seek-while-loading). Backfill script
+(`backend/scripts/apply_faststart.py`) rewrites existing stored videos
+with `+faststart` so the moov atom sits at the head of the file.
+`HEAD /api/media/{uuid}` returns headers-only (client probing).
+`DELETE /api/lessons/skills/{id}` archives (soft-delete via `archived:
+true`); list endpoint filters archived; `POST /unarchive` restores.
+Published-skill dedupe: hard-delete the stale copies + migrate
+attempt/signoff `skill_id` references via
+`backend/scripts/dedupe_published_skills.py`. Jovelyn's seeded attempt
+swapped from a WAV placeholder to a real MP4. Glove-removal content
+pass: step frames, quiz text, check translations tightened.
+
+## lessons/record (branch `lessons/record`, forked off main)
+
+Record-a-skill end-to-end pipeline for the Care Manager. **Chunked
+upload** (`POST /uploads` → `PUT /uploads/{id}/chunks/{i}` →
+`POST /uploads/{id}/complete`) with resumable semantics. **Transcode
+stage** uses ffmpeg (HEVC → H.264, +faststart) via `transcode.py` +
+ffprobe. **Analyze stage** calls Gemini with the lane-B response schema
+(`schemas.py`) and retries on 503. **Draft editor** at
+`/skills/drafts/:jobId` with step/check/quiz editing + per-step frame
+re-pick. **Publish** bumps the skill `version`, wipes the job rows for
+that skill (the published skill IS the audit trail), and queues
+es + tl translation. **Translations** are retryable + reviewable
+(`POST /skills/{id}/translations/retry`,
+`POST /skills/{id}/translations/{lang}/review`). New collection
+`lesson_jobs` is owned entirely by this feature. In-process
+`runner.py` with heartbeat + stale sweep (no celery). Zero shared-line
+changes beyond auto-discovery picking up the new files. Full endpoint
+table and state-machine diagram in `docs/merge/lessons.md`.
+
+## grading/signoff (branch `grading/signoff`, forked off main)
+
+Adaptive-3-run `grade_clip` pipeline + sign-off workflow.
+`POST /api/grading/clips` ingests multipart mp4, transcodes HEVC →
+H.264 via ffmpeg, runs the Gemini video-analysis pipeline up to 3
+times (early stop on unanimous pass; consensus merge over inconclusive
+runs), writes an `attempts` row with `overall`, `score`, `checks[]`,
+`frame_ids[]`, `graded_at`. `POST /attempts/{id}/signoff`
+(`{decision: approve|send_back, note}`) updates `caregivers.cleared_skills`
+on approve and records a `signoffs` row either way. Competency rollup
+at `GET /api/grading/competency`. Caregiver `/practice` + `/practice/:skillId`
+UI. Agency `/signoff` queue + `/signoff/:id` detail + `/competency/:id`
+drill-in. Idempotent `Glove removal` seed (`backend/features/grading/seed.py`)
+runs on feature startup. Stale sweeper flips abandoned `grading` rows
+to `grading_error` after 10 min. **`ffmpeg + ffprobe` required** —
+`apt-get install -y ffmpeg` on the host (verified 5.1.9). One shared-
+line change (`CaregiverLayout` adds `AbortController` to the by-code
+fetch) folded in at the end of the branch, documented in
+`docs/merge/grading.md`.
+
 ## channel + questions (branch `channel/questions`, forked off post-merge main)
 
 - **Replaced the Phase-1 Chat/Ask/Questions placeholders** with real surfaces.
