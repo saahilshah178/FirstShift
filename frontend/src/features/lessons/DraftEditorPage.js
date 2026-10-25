@@ -242,6 +242,26 @@ function Editor({ job, onChange, savingStep, setSavingStep, publishError, setPub
   const removeCheck = (id) =>
     setDraft((d) => ({ ...d, checks: (d.checks || []).filter((c) => c.id !== id) }));
 
+  // Fix #10 — quiz count is free. The editor adds and removes questions
+  // directly; publish accepts 0..N (each must still have 3 choices).
+  const addQuiz = () =>
+    setDraft((d) => {
+      const existing = d.quiz || [];
+      // Pick next free `qN` id even if the user removed middle items.
+      let n = existing.length + 1;
+      const taken = new Set(existing.map((q) => q.id));
+      while (taken.has(`q${n}`)) n += 1;
+      return {
+        ...d,
+        quiz: [
+          ...existing,
+          { id: `q${n}`, prompt: "", choices: ["", "", ""], answer_index: 0 },
+        ],
+      };
+    });
+  const removeQuiz = (id) =>
+    setDraft((d) => ({ ...d, quiz: (d.quiz || []).filter((q) => q.id !== id) }));
+
   const save = async () => {
     setSaving(true);
     setSaveErr(null);
@@ -446,17 +466,40 @@ function Editor({ job, onChange, savingStep, setSavingStep, publishError, setPub
       </section>
 
       <section>
-        <h2 className="text-lg font-semibold mb-2">Quiz</h2>
+        <div className="flex items-center justify-between mb-2">
+          <h2 className="text-lg font-semibold">Quiz</h2>
+          <button
+            type="button"
+            onClick={addQuiz}
+            data-testid="editor-add-quiz"
+            className="tap px-3 text-xs font-ui rounded-full border"
+            style={{ borderColor: "var(--fs-border)" }}
+          >
+            + Add question
+          </button>
+        </div>
         <ul className="space-y-3" data-testid="editor-quiz">
           {draft.quiz.map((q) => (
             <li key={q.id} className="fs-card p-3 space-y-2" data-testid={`editor-quiz-${q.id}`}>
-              <input
-                value={q.prompt || ""}
-                onChange={(e) => updateQuiz(q.id, { prompt: e.target.value })}
-                data-testid={`editor-quiz-prompt-${q.id}`}
-                className="block w-full text-sm font-ui rounded-md px-2 py-1 border bg-transparent tap"
-                style={{ borderColor: "var(--fs-border)" }}
-              />
+              <div className="flex items-start gap-2">
+                <input
+                  value={q.prompt || ""}
+                  onChange={(e) => updateQuiz(q.id, { prompt: e.target.value })}
+                  data-testid={`editor-quiz-prompt-${q.id}`}
+                  className="block flex-1 text-sm font-ui rounded-md px-2 py-1 border bg-transparent tap"
+                  style={{ borderColor: "var(--fs-border)" }}
+                />
+                <button
+                  type="button"
+                  onClick={() => removeQuiz(q.id)}
+                  data-testid={`editor-quiz-remove-${q.id}`}
+                  className="text-xs font-ui tap px-2"
+                  style={{ color: "var(--fs-fail)" }}
+                  title="Remove question"
+                >
+                  Remove
+                </button>
+              </div>
               <div className="space-y-1">
                 {(q.choices || []).slice(0, 3).map((opt, i) => (
                   <label key={i} className="flex items-center gap-2">
@@ -467,6 +510,12 @@ function Editor({ job, onChange, savingStep, setSavingStep, publishError, setPub
                       onChange={() => updateQuiz(q.id, { answer_index: i })}
                       data-testid={`editor-quiz-radio-${q.id}-${i}`}
                     />
+                    <span
+                      className="font-ui text-xs"
+                      style={{ color: "var(--fs-muted)", minWidth: "1ch" }}
+                    >
+                      {i + 1}.
+                    </span>
                     <input
                       value={opt}
                       onChange={(e) => {
@@ -483,6 +532,15 @@ function Editor({ job, onChange, savingStep, setSavingStep, publishError, setPub
               </div>
             </li>
           ))}
+          {draft.quiz.length === 0 ? (
+            <li
+              className="fs-card px-4 py-3 text-xs font-ui"
+              data-testid="editor-quiz-empty"
+              style={{ color: "var(--fs-muted)" }}
+            >
+              No quiz questions. (Optional — add any number you'd like.)
+            </li>
+          ) : null}
         </ul>
       </section>
 

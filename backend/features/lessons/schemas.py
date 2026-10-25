@@ -10,8 +10,8 @@ from typing import Any
 LANE_B_PROMPT = (
     "Use only what the nurse shows or says. Each instruction is under 20 "
     "words, in plain language. Checks must be visible on camera, in order, "
-    "ids c1..cN. The quiz is exactly 2 multiple-choice questions with 3 "
-    "options each; answer is the index."
+    "ids c1..cN. The quiz is a short set of 1 to 3 multiple-choice questions, "
+    "each with 3 options; answer is the index."
 )
 
 
@@ -249,14 +249,17 @@ def validate_analyze(
         })
 
     # ---- Quiz ----
+    # Fix #10 — quiz count is unconstrained; 0..N allowed. Still enforce
+    # 3 choices and a valid answer index per question that IS present.
     raw_quiz = payload.get("quiz") or []
     quiz_out: list[dict] = []
-    if not isinstance(raw_quiz, list) or len(raw_quiz) != 2:
+    if raw_quiz and not isinstance(raw_quiz, list):
         problems.append({
             "where": "quiz",
-            "message": f"Expected 2 quiz questions, got {len(raw_quiz) if isinstance(raw_quiz, list) else 0}.",
+            "message": "Quiz must be a list.",
             "blocking": True,
         })
+        raw_quiz = []
     for i, raw in enumerate(raw_quiz or []):
         if not isinstance(raw, dict):
             problems.append({"where": f"quiz[{i}]", "message": "Quiz item is not an object.", "blocking": True})
